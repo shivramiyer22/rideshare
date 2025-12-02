@@ -18,6 +18,10 @@ from langchain.agents import create_agent
 from langchain.tools import tool
 from typing import Dict, Any
 from langgraph.checkpoint.memory import InMemorySaver
+import logging
+
+# Setup logging
+logger = logging.getLogger(__name__)
 
 
 @tool
@@ -213,12 +217,19 @@ try:
         ),
         name="orchestrator_agent"
     )
+    logger.info("✓ Orchestrator agent initialized successfully")
 except Exception as e:
     # If API key is missing, set to None (for testing environments)
-    if "api_key" in str(e).lower() or "openai" in str(e).lower():
+    error_msg = str(e).lower()
+    if "api_key" in error_msg or "openai" in error_msg or "authentication" in error_msg:
+        logger.warning(
+            "⚠️  Orchestrator agent could not be initialized: OPENAI_API_KEY not configured or invalid. "
+            "Chatbot endpoints will return 503 Service Unavailable."
+        )
         orchestrator_agent = None
     else:
         # Re-raise if it's not an API key issue
+        logger.error(f"Failed to initialize orchestrator agent: {e}")
         raise
 
 

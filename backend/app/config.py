@@ -7,11 +7,17 @@ import os
 from pathlib import Path
 from typing import Optional
 from pydantic_settings import BaseSettings
+from dotenv import load_dotenv
 
 
 # Get the root directory (2 levels up from backend/app/)
 ROOT_DIR = Path(__file__).parent.parent.parent
 ENV_FILE = ROOT_DIR / ".env"
+
+# Load .env file explicitly BEFORE creating Settings instance
+# This ensures environment variables are available to os.getenv() calls
+if ENV_FILE.exists():
+    load_dotenv(ENV_FILE)
 
 
 class Settings(BaseSettings):

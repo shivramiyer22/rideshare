@@ -268,6 +268,14 @@ async def validate_competitor_data(df: pd.DataFrame) -> Dict[str, Any]:
     
     # Validate price is numeric
     try:
+        # Clean price column: remove dollar signs, commas, percentage signs, and whitespace
+        # This handles formats like: "$888.88 ", "$5.42 ", "67.02%", etc.
+        if df[price_col].dtype == 'object':  # Only clean if it's a string column
+            df[price_col] = df[price_col].str.replace('$', '', regex=False)
+            df[price_col] = df[price_col].str.replace(',', '', regex=False)
+            df[price_col] = df[price_col].str.replace('%', '', regex=False)
+            df[price_col] = df[price_col].str.strip()
+        
         df[price_col] = pd.to_numeric(df[price_col], errors="coerce")
         if df[price_col].isna().any():
             return {
@@ -353,6 +361,24 @@ async def upload_historical_data(file: UploadFile = File(...)):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Error reading file: {str(e)}"
             )
+        
+        # Clean numeric columns BEFORE validation
+        # Remove dollar signs, commas, percentage signs, and whitespace from potential numeric columns
+        numeric_columns = [
+            "Historical_Cost_of_Ride", "Historical_Unit_Price", "Expected_Ride_Duration",
+            "Number_Of_Riders", "Number_of_Drivers", "Supply_By_Demand",
+            "Number_of_Past_Rides", "Average_Ratings", "price"
+        ]
+        
+        for col in numeric_columns:
+            if col in df.columns and df[col].dtype == 'object':  # Only clean string columns
+                df[col] = df[col].astype(str).str.replace('$', '', regex=False)
+                df[col] = df[col].str.replace(',', '', regex=False)
+                df[col] = df[col].str.replace('%', '', regex=False)
+                df[col] = df[col].str.strip()
+                # Replace empty strings with NaN
+                df[col] = df[col].replace('', pd.NA)
+                df[col] = df[col].replace('nan', pd.NA)
         
         # Validate data
         validation = await validate_historical_data(df)
@@ -530,6 +556,24 @@ async def upload_competitor_data(file: UploadFile = File(...)):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Error reading file: {str(e)}"
             )
+        
+        # Clean numeric columns BEFORE validation
+        # Remove dollar signs, commas, percentage signs, and whitespace from potential numeric columns
+        numeric_columns = [
+            "Historical_Cost_of_Ride", "Historical_Unit_Price", "Expected_Ride_Duration",
+            "Number_Of_Riders", "Number_of_Drivers", "Supply_By_Demand",
+            "Number_of_Past_Rides", "Average_Ratings", "price"
+        ]
+        
+        for col in numeric_columns:
+            if col in df.columns and df[col].dtype == 'object':  # Only clean string columns
+                df[col] = df[col].astype(str).str.replace('$', '', regex=False)
+                df[col] = df[col].str.replace(',', '', regex=False)
+                df[col] = df[col].str.replace('%', '', regex=False)
+                df[col] = df[col].str.strip()
+                # Replace empty strings with NaN
+                df[col] = df[col].replace('', pd.NA)
+                df[col] = df[col].replace('nan', pd.NA)
         
         # Validate data
         validation = await validate_competitor_data(df)
