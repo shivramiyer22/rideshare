@@ -107,8 +107,21 @@ def query_chromadb(
         # Get ChromaDB client
         chroma_client = setup_chromadb_client()
         
-        # Get the collection
-        collection = chroma_client.get_collection(name=collection_name)
+        # Setup OpenAI embedding function (must match what was used to create collection)
+        # We use text-embedding-3-small with 1536 dimensions
+        from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
+        embedding_func = None
+        if settings.OPENAI_API_KEY:
+            embedding_func = OpenAIEmbeddingFunction(
+                api_key=settings.OPENAI_API_KEY,
+                model_name="text-embedding-3-small"
+            )
+        
+        # Get the collection with the embedding function
+        collection = chroma_client.get_collection(
+            name=collection_name,
+            embedding_function=embedding_func
+        )
         
         # Query for similar documents
         # ChromaDB will convert query_text to an embedding and find similar ones

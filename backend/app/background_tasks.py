@@ -213,6 +213,56 @@ async def compute_analytics_kpis() -> Dict[str, Any]:
         }
 
 
+async def check_and_run_pipeline():
+    """
+    Hourly check for MongoDB changes and trigger agent pipeline if needed.
+    
+    This function:
+    1. Checks if the ChangeTracker has recorded any changes since last run
+    2. If changes exist, triggers the full agent pipeline
+    3. Clears the change tracker after pipeline completes
+    
+    Runs every hour to aggregate changes and batch-process via pipeline.
+    This is more efficient than running the pipeline on every change.
+    
+    The pipeline runs independently of chatbot queries - chatbot continues
+    to work normally while the pipeline processes in the background.
+    """
+    try:
+        from app.agents.data_ingestion import change_tracker
+        from app.pipeline_orchestrator import run_agent_pipeline
+        
+        # Check if there are pending changes
+        if not change_tracker.has_pending_changes():
+            logger.debug("No MongoDB changes detected since last pipeline run")
+            return
+        
+        # Get change summary and clear tracker
+        changes_summary = change_tracker.get_and_clear_changes()
+        
+        logger.info("=" * 60)
+        logger.info("HOURLY PIPELINE CHECK: Changes detected!")
+        logger.info(f"  Changes: {changes_summary['change_count']}")
+        logger.info(f"  Collections: {changes_summary['collections_changed']}")
+        logger.info("=" * 60)
+        
+        # Run the agent pipeline
+        result = await run_agent_pipeline(
+            trigger_source="scheduled_hourly",
+            changes_summary=changes_summary
+        )
+        
+        if result.get("success"):
+            logger.info(f"✓ Hourly pipeline completed successfully: {result.get('run_id')}")
+        else:
+            logger.warning(f"⚠️ Hourly pipeline completed with issues: {result.get('errors', [])}")
+        
+    except ImportError as e:
+        logger.warning(f"Pipeline modules not available: {e}")
+    except Exception as e:
+        logger.error(f"Error in hourly pipeline check: {e}")
+
+
 async def check_and_retrain_ml_model():
     """
     Check if new historical data has been added and retrain Prophet ML model if needed.
@@ -319,11 +369,12 @@ async def check_and_retrain_ml_model():
 
 def start_background_tasks():
     """
-    Start the background scheduler for analytics pre-computation and ML model retraining.
-    
+    Start the background scheduler for:
     - Analytics pre-computation: Runs every 5 minutes
     - ML model retraining check: Runs every 30 minutes
+    - Agent pipeline check: Runs every hour (only if changes detected)
     """
+    # Analytics KPI pre-computation (every 5 minutes)
     scheduler.add_job(
         compute_analytics_kpis,
         trigger=IntervalTrigger(minutes=5),
@@ -342,10 +393,21 @@ def start_background_tasks():
         replace_existing=True
     )
     
+    # Hourly agent pipeline check - triggers if MongoDB changes detected
+    # Pipeline runs: Forecasting + Analysis (parallel) → Recommendations → What-If
+    scheduler.add_job(
+        check_and_run_pipeline,
+        trigger=IntervalTrigger(hours=1),
+        id='agent_pipeline_check',
+        name='Agent Pipeline Check (Hourly)',
+        replace_existing=True
+    )
+    
     scheduler.start()
     print("✓ Background scheduler started:")
     print("  - Analytics pre-computation: Every 5 minutes")
     print("  - ML model retraining check: Every 30 minutes")
+    print("  - Agent pipeline check: Every hour (if changes detected)")
 
 
 def stop_background_tasks():

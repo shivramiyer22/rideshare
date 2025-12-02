@@ -60,15 +60,42 @@ async def train_prophet_models() -> Dict[str, Any]:
                 detail="Database connection not available"
             )
         
-        # Read historical data from MongoDB
-        collection = database["historical_rides"]
-        cursor = collection.find({})
-        records = await cursor.to_list(length=None)
+        # ================================================================
+        # Load BOTH HWCO historical data AND competitor data for training
+        # This improves forecast accuracy by learning market-wide patterns
+        # ================================================================
         
-        if len(records) < 300:
+        # Load HWCO historical data
+        hwco_collection = database["historical_rides"]
+        hwco_cursor = hwco_collection.find({})
+        hwco_records = await hwco_cursor.to_list(length=None)
+        hwco_count = len(hwco_records)
+        logger.info(f"Loaded {hwco_count} HWCO historical records")
+        
+        # Add source identifier to HWCO records
+        for record in hwco_records:
+            record["Rideshare_Company"] = "HWCO"
+        
+        # Load competitor data
+        competitor_collection = database["competitor_prices"]
+        competitor_cursor = competitor_collection.find({})
+        competitor_records = await competitor_cursor.to_list(length=None)
+        competitor_count = len(competitor_records)
+        logger.info(f"Loaded {competitor_count} competitor records")
+        
+        # Add source identifier to competitor records
+        for record in competitor_records:
+            record["Rideshare_Company"] = "COMPETITOR"
+        
+        # Combine both datasets
+        records = hwco_records + competitor_records
+        total_count = len(records)
+        logger.info(f"Combined training data: {total_count} records (HWCO: {hwco_count}, Competitor: {competitor_count})")
+        
+        if total_count < 300:
             raise HTTPException(
                 status_code=400,
-                detail=f"Insufficient data: {len(records)} rows. Minimum 300 total rows required (across all pricing types)."
+                detail=f"Insufficient combined data: {total_count} rows. Minimum 300 total rows required (HWCO: {hwco_count}, Competitor: {competitor_count})."
             )
         
         # Convert to DataFrame
@@ -130,7 +157,10 @@ async def train_prophet_models() -> Dict[str, Any]:
                     "$set": {
                         "timestamp": datetime.utcnow(),
                         "training_rows": result.get("training_rows", 0),
-                        "mape": result.get("mape", 0.0)
+                        "hwco_rows": hwco_count,
+                        "competitor_rows": competitor_count,
+                        "mape": result.get("mape", 0.0),
+                        "data_sources": ["historical_rides", "competitor_prices"]
                     }
                 },
                 upsert=True
@@ -139,14 +169,20 @@ async def train_prophet_models() -> Dict[str, Any]:
         except Exception as e:
             logger.warning(f"Failed to update training metadata: {e}")
         
-        # Build response with pricing_model breakdown if available
+        # Build response with data source breakdown
         response = {
             "success": True,
             "mape": result.get("mape", 0.0),
             "confidence": result.get("confidence", 0.80),
             "model_path": result.get("model_path", ""),
             "training_rows": result.get("training_rows", 0),
-            "message": f"Model trained successfully on {result.get('training_rows', 0)} rows"
+            "data_sources": {
+                "hwco_rows": hwco_count,
+                "competitor_rows": competitor_count,
+                "total_rows": total_count,
+                "collections": ["historical_rides", "competitor_prices"]
+            },
+            "message": f"Model trained successfully on {result.get('training_rows', 0)} combined rows (HWCO: {hwco_count}, Competitor: {competitor_count})"
         }
         
         # Add pricing_model breakdown if we have the data

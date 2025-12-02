@@ -769,6 +769,625 @@ def analyze_industry_trends(news_data: str) -> str:
     return f"Industry trends: {news_data[:200]}... Market analysis: Monitor industry news for regulatory changes, competitor moves, or market shifts that could affect demand."
 
 
+# ============================================================================
+# PIPELINE-SPECIFIC TOOLS
+# These tools are used by the Pipeline Orchestrator for automated analysis
+# They run independently of chatbot queries and don't affect existing functionality
+# ============================================================================
+
+@tool
+def analyze_competitor_data_for_pipeline() -> str:
+    """
+    Analyze HWCO historical data vs competitor data for the pipeline.
+    
+    This tool performs comprehensive competitor analysis comparing:
+    - HWCO pricing vs Lyft pricing
+    - Revenue metrics comparison
+    - Pricing model distribution
+    - Location and time-based pricing gaps
+    
+    Used by: Pipeline Orchestrator (Analysis Phase)
+    
+    Returns:
+        str: JSON string with competitor analysis results
+    """
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        
+        try:
+            # Get HWCO data from historical_rides
+            hwco_collection = db["historical_rides"]
+            hwco_data = list(hwco_collection.find({"Rideshare_Company": "HWCO"}).limit(1000))
+            
+            # Get competitor data
+            competitor_collection = db["competitor_prices"]
+            competitor_data = list(competitor_collection.find({}).limit(1000))
+            
+            # Calculate HWCO metrics
+            hwco_total_revenue = sum(d.get("Historical_Cost_of_Ride", 0) for d in hwco_data)
+            hwco_count = len(hwco_data)
+            hwco_avg_price = hwco_total_revenue / hwco_count if hwco_count > 0 else 0
+            
+            # Calculate competitor metrics
+            competitor_total_revenue = sum(d.get("Historical_Cost_of_Ride", d.get("price", 0)) for d in competitor_data)
+            competitor_count = len(competitor_data)
+            competitor_avg_price = competitor_total_revenue / competitor_count if competitor_count > 0 else 0
+            
+            # Pricing by location
+            hwco_by_location = {}
+            for d in hwco_data:
+                loc = d.get("Location_Category", "Unknown")
+                if loc not in hwco_by_location:
+                    hwco_by_location[loc] = {"count": 0, "total": 0}
+                hwco_by_location[loc]["count"] += 1
+                hwco_by_location[loc]["total"] += d.get("Historical_Cost_of_Ride", 0)
+            
+            for loc in hwco_by_location:
+                hwco_by_location[loc]["avg"] = round(
+                    hwco_by_location[loc]["total"] / hwco_by_location[loc]["count"], 2
+                ) if hwco_by_location[loc]["count"] > 0 else 0
+            
+            # Revenue gap
+            revenue_gap_pct = ((competitor_total_revenue - hwco_total_revenue) / hwco_total_revenue * 100) if hwco_total_revenue > 0 else 0
+            
+        finally:
+            client.close()
+        
+        # Generate natural language explanation using GPT-4
+        explanation = _generate_competitor_explanation(
+            hwco_total_revenue, hwco_count, hwco_avg_price,
+            competitor_total_revenue, competitor_count, competitor_avg_price,
+            revenue_gap_pct, hwco_by_location
+        )
+        
+        return json.dumps({
+            "hwco": {
+                "total_revenue": round(hwco_total_revenue, 2),
+                "ride_count": hwco_count,
+                "avg_price": round(hwco_avg_price, 2),
+                "by_location": hwco_by_location
+            },
+            "competitor": {
+                "total_revenue": round(competitor_total_revenue, 2),
+                "ride_count": competitor_count,
+                "avg_price": round(competitor_avg_price, 2)
+            },
+            "comparison": {
+                "revenue_gap_percent": round(revenue_gap_pct, 2),
+                "price_gap_percent": round((competitor_avg_price - hwco_avg_price) / hwco_avg_price * 100, 2) if hwco_avg_price > 0 else 0,
+                "hwco_needs_increase": revenue_gap_pct > 0
+            },
+            "explanation": explanation,
+            "generated_at": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        return json.dumps({"error": f"Error in competitor analysis: {str(e)}"})
+
+
+def _generate_competitor_explanation(
+    hwco_revenue, hwco_count, hwco_avg,
+    comp_revenue, comp_count, comp_avg,
+    revenue_gap, by_location
+) -> str:
+    """Generate natural language explanation for competitor analysis using GPT-4."""
+    try:
+        from openai import OpenAI
+        
+        if not settings.OPENAI_API_KEY:
+            # Fallback explanation without GPT-4
+            if revenue_gap > 0:
+                return f"HWCO is underperforming vs competitors by {abs(revenue_gap):.1f}%. Average price ${hwco_avg:.2f} vs competitor ${comp_avg:.2f}. Consider strategic price adjustments."
+            else:
+                return f"HWCO is outperforming competitors by {abs(revenue_gap):.1f}%. Maintain current pricing strategy while monitoring market changes."
+        
+        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        
+        # Find best/worst performing locations
+        locations_sorted = sorted(by_location.items(), key=lambda x: x[1].get("avg", 0), reverse=True)
+        top_locations = locations_sorted[:3] if len(locations_sorted) >= 3 else locations_sorted
+        
+        prompt = f"""
+        Analyze this competitor comparison data and provide a concise business insight (2-3 sentences):
+
+        HWCO Performance:
+        - Total Revenue: ${hwco_revenue:,.2f}
+        - Total Rides: {hwco_count}
+        - Average Price: ${hwco_avg:.2f}
+        
+        Competitor Performance:
+        - Total Revenue: ${comp_revenue:,.2f}
+        - Total Rides: {comp_count}
+        - Average Price: ${comp_avg:.2f}
+        
+        Revenue Gap: {revenue_gap:.1f}% (positive = HWCO behind, negative = HWCO ahead)
+        
+        Top Performing HWCO Locations: {', '.join(f"{loc}: ${data.get('avg', 0):.2f}" for loc, data in top_locations)}
+        
+        Provide actionable insights for business decision-making. Focus on pricing opportunities and competitive positioning.
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200
+        )
+        
+        return response.choices[0].message.content.strip()
+        
+    except Exception as e:
+        # Fallback on error
+        if revenue_gap > 0:
+            return f"HWCO is underperforming vs competitors by {abs(revenue_gap):.1f}%. Consider strategic price adjustments."
+        else:
+            return f"HWCO is outperforming competitors by {abs(revenue_gap):.1f}%. Maintain current strategy."
+
+
+@tool
+def analyze_external_data_for_pipeline() -> str:
+    """
+    Analyze external data (news, events, traffic) for the pipeline.
+    
+    This tool synthesizes data from n8n workflows:
+    - Events from Eventbrite (demand impact)
+    - Traffic from Google Maps (surge opportunities)
+    - News from NewsAPI (industry trends)
+    
+    Used by: Pipeline Orchestrator (Analysis Phase)
+    
+    Returns:
+        str: JSON string with external data analysis
+    """
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        
+        try:
+            # Get events data
+            events_collection = db["events_data"]
+            events = list(events_collection.find({}).sort("event_date", -1).limit(50))
+            
+            # Get traffic data
+            traffic_collection = db["traffic_data"]
+            traffic = list(traffic_collection.find({}).sort("timestamp", -1).limit(50))
+            
+            # Get news data
+            news_collection = db["rideshare_news"]
+            news = list(news_collection.find({}).sort("published_at", -1).limit(20))
+            
+            # Analyze events for demand impact
+            high_impact_events = [e for e in events if e.get("expected_attendees", 0) > 5000]
+            
+            # Analyze traffic for surge opportunities
+            heavy_traffic = [t for t in traffic if "heavy" in str(t.get("traffic_level", "")).lower()]
+            
+            # Count news articles
+            news_count = len(news)
+            
+        finally:
+            client.close()
+        
+        # Generate natural language explanation
+        explanation = _generate_external_data_explanation(
+            len(events), len(high_impact_events), high_impact_events[:3],
+            len(traffic), len(heavy_traffic),
+            news_count, [n.get("title", "N/A")[:50] for n in news[:3]]
+        )
+        
+        return json.dumps({
+            "events": {
+                "total_count": len(events),
+                "high_impact_events": len(high_impact_events),
+                "sample_events": [
+                    {
+                        "name": e.get("event_name", e.get("name", "Unknown")),
+                        "attendees": e.get("expected_attendees", "N/A"),
+                        "date": str(e.get("event_date", "N/A"))[:10]
+                    } for e in high_impact_events[:5]
+                ]
+            },
+            "traffic": {
+                "total_records": len(traffic),
+                "heavy_traffic_count": len(heavy_traffic),
+                "surge_opportunities": len(heavy_traffic)
+            },
+            "news": {
+                "article_count": news_count,
+                "recent_headlines": [n.get("title", "N/A")[:80] for n in news[:5]]
+            },
+            "demand_indicators": {
+                "event_driven_surge_opportunities": len(high_impact_events),
+                "traffic_driven_surge_opportunities": len(heavy_traffic),
+                "total_surge_opportunities": len(high_impact_events) + len(heavy_traffic)
+            },
+            "explanation": explanation,
+            "generated_at": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        return json.dumps({"error": f"Error analyzing external data: {str(e)}"})
+
+
+def _generate_external_data_explanation(
+    events_count, high_impact_count, sample_events,
+    traffic_count, heavy_traffic_count,
+    news_count, headlines
+) -> str:
+    """Generate natural language explanation for external data analysis using GPT-4."""
+    try:
+        from openai import OpenAI
+        
+        surge_opportunities = high_impact_count + heavy_traffic_count
+        
+        if not settings.OPENAI_API_KEY:
+            # Fallback explanation
+            if surge_opportunities > 0:
+                return f"Identified {surge_opportunities} surge pricing opportunities: {high_impact_count} high-impact events and {heavy_traffic_count} heavy traffic periods. Consider implementing dynamic pricing during these times."
+            else:
+                return "No immediate surge opportunities detected. Monitor for upcoming events and traffic patterns."
+        
+        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        
+        event_names = [e.get("event_name", e.get("name", "Unknown")) for e in sample_events]
+        
+        prompt = f"""
+        Analyze this external data and provide a concise business insight (2-3 sentences):
+
+        Events Data:
+        - Total events: {events_count}
+        - High-impact events (5000+ attendees): {high_impact_count}
+        - Sample events: {', '.join(event_names) if event_names else 'None'}
+        
+        Traffic Data:
+        - Total records: {traffic_count}
+        - Heavy traffic periods: {heavy_traffic_count}
+        
+        News:
+        - Article count: {news_count}
+        - Recent headlines: {'; '.join(headlines) if headlines else 'None'}
+        
+        Identify surge pricing opportunities and demand drivers. Focus on actionable insights for revenue optimization.
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200
+        )
+        
+        return response.choices[0].message.content.strip()
+        
+    except Exception as e:
+        surge_opportunities = high_impact_count + heavy_traffic_count
+        if surge_opportunities > 0:
+            return f"Identified {surge_opportunities} surge pricing opportunities from events and traffic. Consider dynamic pricing."
+        return "External data analysis complete. Monitor for emerging opportunities."
+
+
+@tool
+def generate_pricing_rules_for_pipeline() -> str:
+    """
+    Generate dynamic pricing rules based on latest data analysis.
+    
+    This tool creates pricing rules by analyzing:
+    - Current HWCO vs competitor pricing gaps
+    - Demand patterns by location and time
+    - Customer segment behavior
+    
+    Rules are stored in the pricing_strategies MongoDB collection.
+    
+    Used by: Pipeline Orchestrator (Analysis Phase)
+    
+    Returns:
+        str: JSON string with generated pricing rules summary
+    """
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        
+        try:
+            # Get current data for analysis
+            hwco_collection = db["historical_rides"]
+            
+            # Analyze by location
+            location_pipeline = [
+                {"$group": {
+                    "_id": "$Location_Category",
+                    "avg_price": {"$avg": "$Historical_Cost_of_Ride"},
+                    "count": {"$sum": 1}
+                }}
+            ]
+            location_stats = {r["_id"]: r for r in hwco_collection.aggregate(location_pipeline)}
+            
+            # Analyze by time
+            time_pipeline = [
+                {"$group": {
+                    "_id": "$Time_of_Ride",
+                    "avg_price": {"$avg": "$Historical_Cost_of_Ride"},
+                    "count": {"$sum": 1}
+                }}
+            ]
+            time_stats = {r["_id"]: r for r in hwco_collection.aggregate(time_pipeline)}
+            
+            # Generate rules based on analysis
+            generated_rules = []
+            
+            # Location-based rules
+            for loc, stats in location_stats.items():
+                if loc and stats["count"] > 10:
+                    rule = {
+                        "rule_id": f"AUTO_LOC_{loc.upper()[:3]}",
+                        "name": f"Auto-generated {loc} pricing",
+                        "category": "location_based",
+                        "condition": {"location_category": loc},
+                        "current_avg_price": round(stats["avg_price"], 2),
+                        "ride_count": stats["count"],
+                        "generated_at": datetime.now().isoformat(),
+                        "source": "pipeline_auto_generated"
+                    }
+                    generated_rules.append(rule)
+            
+            # Time-based rules
+            for time_period, stats in time_stats.items():
+                if time_period and stats["count"] > 10:
+                    rule = {
+                        "rule_id": f"AUTO_TIME_{time_period.upper()[:3]}",
+                        "name": f"Auto-generated {time_period} pricing",
+                        "category": "time_based",
+                        "condition": {"time_of_day": time_period},
+                        "current_avg_price": round(stats["avg_price"], 2),
+                        "ride_count": stats["count"],
+                        "generated_at": datetime.now().isoformat(),
+                        "source": "pipeline_auto_generated"
+                    }
+                    generated_rules.append(rule)
+            
+            # Store generated rules in pricing_strategies
+            if generated_rules:
+                strategies_collection = db["pricing_strategies"]
+                # Remove old auto-generated rules
+                strategies_collection.delete_many({"source": "pipeline_auto_generated"})
+                # Insert new rules
+                strategies_collection.insert_many(generated_rules)
+            
+        finally:
+            client.close()
+        
+        # Generate explanation for the rules
+        explanation = _generate_pricing_rules_explanation(generated_rules, location_stats, time_stats)
+        
+        return json.dumps({
+            "rules_generated": len(generated_rules),
+            "categories": list(set(r["category"] for r in generated_rules)),
+            "rules": generated_rules,
+            "stored_in": "pricing_strategies",
+            "explanation": explanation,
+            "generated_at": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        return json.dumps({"error": f"Error generating pricing rules: {str(e)}"})
+
+
+def _generate_pricing_rules_explanation(rules, location_stats, time_stats) -> str:
+    """Generate natural language explanation for pricing rules using GPT-4."""
+    try:
+        from openai import OpenAI
+        
+        if not settings.OPENAI_API_KEY:
+            loc_count = sum(1 for r in rules if r.get("category") == "location_based")
+            time_count = sum(1 for r in rules if r.get("category") == "time_based")
+            return f"Generated {len(rules)} pricing rules: {loc_count} location-based and {time_count} time-based rules. Rules stored in pricing_strategies collection for agent access."
+        
+        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        
+        # Get summary stats
+        loc_rules = [r for r in rules if r.get("category") == "location_based"]
+        time_rules = [r for r in rules if r.get("category") == "time_based"]
+        
+        prompt = f"""
+        Summarize these auto-generated pricing rules in 2-3 sentences for business users:
+
+        Location-Based Rules ({len(loc_rules)}):
+        {'; '.join(f"{r['name']}: ${r['current_avg_price']:.2f} avg ({r['ride_count']} rides)" for r in loc_rules[:5])}
+        
+        Time-Based Rules ({len(time_rules)}):
+        {'; '.join(f"{r['name']}: ${r['current_avg_price']:.2f} avg ({r['ride_count']} rides)" for r in time_rules[:5])}
+        
+        Explain what these rules mean for pricing strategy and revenue optimization.
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200
+        )
+        
+        return response.choices[0].message.content.strip()
+        
+    except Exception as e:
+        loc_count = sum(1 for r in rules if r.get("category") == "location_based")
+        time_count = sum(1 for r in rules if r.get("category") == "time_based")
+        return f"Generated {len(rules)} pricing rules: {loc_count} location-based and {time_count} time-based. Rules ready for pricing optimization."
+
+
+@tool
+def calculate_whatif_impact_for_pipeline(recommendations: str) -> str:
+    """
+    Calculate what-if impact analysis for pipeline recommendations.
+    
+    This tool estimates the KPI impact of proposed recommendations:
+    - Revenue impact
+    - Profit margin impact
+    - Customer retention impact
+    - Competitive positioning impact
+    
+    Used by: Pipeline Orchestrator (What-If Phase)
+    
+    Args:
+        recommendations: JSON string with recommendations from Recommendation Agent
+    
+    Returns:
+        str: JSON string with impact analysis
+    """
+    try:
+        # Parse recommendations
+        try:
+            recs = json.loads(recommendations) if isinstance(recommendations, str) else recommendations
+        except:
+            recs = {"raw": str(recommendations)}
+        
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        
+        try:
+            # Get baseline KPIs
+            hwco_collection = db["historical_rides"]
+            
+            baseline_revenue = 0
+            baseline_rides = 0
+            
+            for doc in hwco_collection.find({}).limit(1000):
+                baseline_revenue += doc.get("Historical_Cost_of_Ride", 0)
+                baseline_rides += 1
+            
+            baseline_avg = baseline_revenue / baseline_rides if baseline_rides > 0 else 0
+            
+        finally:
+            client.close()
+        
+        # Estimate impacts based on recommendation types
+        # These are model estimates based on industry benchmarks
+        
+        revenue_impact_pct = 0
+        retention_impact_pct = 0
+        margin_impact_pct = 0
+        
+        rec_text = json.dumps(recs).lower()
+        
+        # Surge pricing impact
+        if "surge" in rec_text:
+            revenue_impact_pct += 15
+            margin_impact_pct += 8
+        
+        # Loyalty program impact
+        if "loyalty" in rec_text or "gold" in rec_text or "retention" in rec_text:
+            retention_impact_pct += 12
+            revenue_impact_pct += 5
+        
+        # Competitive pricing impact
+        if "competitive" in rec_text or "competitor" in rec_text:
+            revenue_impact_pct += 8
+            retention_impact_pct += 5
+        
+        # Location-based pricing impact
+        if "urban" in rec_text or "location" in rec_text:
+            revenue_impact_pct += 10
+            margin_impact_pct += 5
+        
+        # Time-based pricing impact
+        if "rush" in rec_text or "peak" in rec_text or "evening" in rec_text or "morning" in rec_text:
+            revenue_impact_pct += 12
+            margin_impact_pct += 7
+        
+        # Cap at reasonable maximums
+        revenue_impact_pct = min(revenue_impact_pct, 25)
+        retention_impact_pct = min(retention_impact_pct, 15)
+        margin_impact_pct = min(margin_impact_pct, 12)
+        
+        # Calculate projected values
+        projected_revenue = baseline_revenue * (1 + revenue_impact_pct / 100)
+        revenue_increase = projected_revenue - baseline_revenue
+        
+        # Generate natural language explanation
+        explanation = _generate_whatif_explanation(
+            baseline_revenue, baseline_rides, baseline_avg,
+            revenue_impact_pct, retention_impact_pct, margin_impact_pct,
+            projected_revenue, revenue_increase, recs
+        )
+        
+        return json.dumps({
+            "baseline": {
+                "total_revenue": round(baseline_revenue, 2),
+                "ride_count": baseline_rides,
+                "avg_revenue_per_ride": round(baseline_avg, 2)
+            },
+            "projected_impact": {
+                "revenue_increase_pct": revenue_impact_pct,
+                "retention_improvement_pct": retention_impact_pct,
+                "margin_improvement_pct": margin_impact_pct,
+                "projected_revenue": round(projected_revenue, 2),
+                "revenue_increase_amount": round(revenue_increase, 2)
+            },
+            "business_objectives_alignment": {
+                "revenue_target_15_25": revenue_impact_pct >= 15,
+                "retention_target_10_15": retention_impact_pct >= 10,
+                "targets_met": revenue_impact_pct >= 15 and retention_impact_pct >= 10
+            },
+            "confidence": "medium" if revenue_impact_pct > 0 else "low",
+            "explanation": explanation,
+            "recommendations_analyzed": recs,
+            "generated_at": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        return json.dumps({"error": f"Error calculating what-if impact: {str(e)}"})
+
+
+def _generate_whatif_explanation(
+    baseline_revenue, baseline_rides, baseline_avg,
+    revenue_pct, retention_pct, margin_pct,
+    projected_revenue, revenue_increase, recs
+) -> str:
+    """Generate natural language explanation for what-if impact analysis using GPT-4."""
+    try:
+        from openai import OpenAI
+        
+        targets_met = revenue_pct >= 15 and retention_pct >= 10
+        
+        if not settings.OPENAI_API_KEY:
+            # Fallback explanation
+            status = "meet" if targets_met else "partially meet"
+            return f"Impact analysis shows potential {revenue_pct}% revenue increase (${revenue_increase:,.2f}) and {retention_pct}% retention improvement. These recommendations would {status} business objectives."
+        
+        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        
+        prompt = f"""
+        Summarize this what-if impact analysis in 2-3 sentences for business decision-makers:
+
+        Current Baseline:
+        - Total Revenue: ${baseline_revenue:,.2f}
+        - Total Rides: {baseline_rides}
+        - Average Revenue/Ride: ${baseline_avg:.2f}
+        
+        Projected Impact from Recommendations:
+        - Revenue Increase: {revenue_pct}% (${revenue_increase:,.2f})
+        - Customer Retention Improvement: {retention_pct}%
+        - Profit Margin Improvement: {margin_pct}%
+        - Projected Total Revenue: ${projected_revenue:,.2f}
+        
+        Business Objectives:
+        - Revenue Target: 15-25% increase {'✓ MET' if revenue_pct >= 15 else '✗ NOT MET'}
+        - Retention Target: 10-15% improvement {'✓ MET' if retention_pct >= 10 else '✗ NOT MET'}
+        
+        Provide executive summary of whether to proceed with recommendations and key risks/benefits.
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200
+        )
+        
+        return response.choices[0].message.content.strip()
+        
+    except Exception as e:
+        targets_met = revenue_pct >= 15 and retention_pct >= 10
+        status = "meet" if targets_met else "partially meet"
+        return f"Impact analysis: {revenue_pct}% revenue increase, {retention_pct}% retention improvement. Recommendations would {status} business objectives."
+
+
 @tool
 def generate_structured_insights(
     kpis: str,

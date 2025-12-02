@@ -40,6 +40,140 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+# ============================================================================
+# CHANGE TRACKER - Tracks MongoDB changes for pipeline triggering
+# ============================================================================
+
+import threading
+from dataclasses import dataclass, field
+from typing import Set
+
+
+@dataclass
+class ChangeRecord:
+    """Record of a single MongoDB change event."""
+    collection: str
+    operation: str  # 'insert' or 'update'
+    document_id: str
+    timestamp: datetime
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "collection": self.collection,
+            "operation": self.operation,
+            "document_id": self.document_id,
+            "timestamp": self.timestamp.isoformat()
+        }
+
+
+class ChangeTracker:
+    """
+    Thread-safe tracker for MongoDB collection changes.
+    
+    Used by the hourly pipeline scheduler to determine if a pipeline run
+    is needed. Changes are recorded when the Data Ingestion Agent processes
+    documents from change streams.
+    
+    Usage:
+        # Record a change
+        change_tracker.record_change("events_data", "insert", "doc123")
+        
+        # Check if there are pending changes
+        if change_tracker.has_pending_changes():
+            changes = change_tracker.get_and_clear_changes()
+            # Run pipeline with changes...
+    """
+    
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._changes: List[ChangeRecord] = []
+        self._collections_changed: Set[str] = set()
+        self._last_change_time: Optional[datetime] = None
+        self._last_pipeline_run: Optional[datetime] = None
+    
+    def record_change(self, collection: str, operation: str, document_id: str) -> None:
+        """Record a change event from MongoDB change stream."""
+        with self._lock:
+            change = ChangeRecord(
+                collection=collection,
+                operation=operation,
+                document_id=document_id,
+                timestamp=datetime.utcnow()
+            )
+            self._changes.append(change)
+            self._collections_changed.add(collection)
+            self._last_change_time = change.timestamp
+            logger.debug(f"Change recorded: {collection}/{operation}/{document_id}")
+    
+    def has_pending_changes(self) -> bool:
+        """Check if there are changes since the last pipeline run."""
+        with self._lock:
+            return len(self._changes) > 0
+    
+    def get_pending_changes_count(self) -> int:
+        """Get the number of pending changes."""
+        with self._lock:
+            return len(self._changes)
+    
+    def get_collections_changed(self) -> List[str]:
+        """Get list of collections that have changed."""
+        with self._lock:
+            return list(self._collections_changed)
+    
+    def get_last_change_time(self) -> Optional[datetime]:
+        """Get the timestamp of the most recent change."""
+        with self._lock:
+            return self._last_change_time
+    
+    def get_and_clear_changes(self) -> Dict[str, Any]:
+        """
+        Get all pending changes and clear the tracker.
+        
+        This should be called when starting a pipeline run.
+        Returns a summary of all changes since the last run.
+        """
+        with self._lock:
+            if not self._changes:
+                return {
+                    "changes": [],
+                    "collections_changed": [],
+                    "change_count": 0,
+                    "first_change_time": None,
+                    "last_change_time": None
+                }
+            
+            result = {
+                "changes": [c.to_dict() for c in self._changes],
+                "collections_changed": list(self._collections_changed),
+                "change_count": len(self._changes),
+                "first_change_time": self._changes[0].timestamp.isoformat() if self._changes else None,
+                "last_change_time": self._last_change_time.isoformat() if self._last_change_time else None
+            }
+            
+            # Clear the tracker
+            self._changes = []
+            self._collections_changed = set()
+            self._last_pipeline_run = datetime.utcnow()
+            
+            logger.info(f"Changes cleared after pipeline trigger: {result['change_count']} changes from {len(result['collections_changed'])} collections")
+            return result
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Get current status of the change tracker."""
+        with self._lock:
+            return {
+                "pending_changes": len(self._changes),
+                "collections_changed": list(self._collections_changed),
+                "last_change_time": self._last_change_time.isoformat() if self._last_change_time else None,
+                "last_pipeline_run": self._last_pipeline_run.isoformat() if self._last_pipeline_run else None
+            }
+
+
+# Global change tracker instance - shared across the application
+change_tracker = ChangeTracker()
+
+
 # ============================================================================
 # CHROMADB SETUP
 # ============================================================================
@@ -345,6 +479,43 @@ def generate_description(document: Dict[str, Any], collection_name: str) -> str:
             timestamp = document.get("timestamp", document.get("date", ""))
             
             return f"{competitor} {route} ${price} {timestamp}"
+        
+        elif collection_name in ["pricing_strategies", "business_rules", "pricing_rules"]:
+            # For pricing strategies and business rules - PRIMARY RAG source for Recommendation Agent
+            # These documents contain strategic knowledge for pricing decisions
+            rule_id = document.get("rule_id", "")
+            name = document.get("name", document.get("rule_name", ""))
+            description = document.get("description", "")
+            rule_type = document.get("rule_type", document.get("type", ""))
+            condition = document.get("condition", {})
+            action = document.get("action", {})
+            
+            # Build searchable description
+            parts = []
+            if rule_id:
+                parts.append(f"Rule {rule_id}")
+            if name:
+                parts.append(name)
+            if description:
+                parts.append(description)
+            if rule_type:
+                parts.append(f"Type: {rule_type}")
+            
+            # Add condition details for searchability
+            if isinstance(condition, dict):
+                for key, value in condition.items():
+                    parts.append(f"{key}: {value}")
+            
+            # Add action details
+            if isinstance(action, dict):
+                action_type = action.get("type", "")
+                if action_type:
+                    parts.append(f"Action: {action_type}")
+                multiplier = action.get("multiplier", action.get("base_multiplier", ""))
+                if multiplier:
+                    parts.append(f"Multiplier: {multiplier}")
+            
+            return " ".join(parts) if parts else f"Pricing rule from {collection_name}"
             
         else:
             # Fallback: create description from document keys
@@ -430,7 +601,11 @@ def get_chromadb_collection_name(mongodb_collection: str) -> str:
         "news_articles": "news_events_vectors",
         "traffic_data": "news_events_vectors",  # Traffic is also event-related context
         "customers": "customer_behavior_vectors",
-        "competitor_prices": "competitor_analysis_vectors"
+        "competitor_prices": "competitor_analysis_vectors",
+        # Strategy knowledge - PRIMARY RAG source for Recommendation Agent
+        "pricing_strategies": "strategy_knowledge_vectors",
+        "business_rules": "strategy_knowledge_vectors",
+        "pricing_rules": "strategy_knowledge_vectors"
     }
     
     return routing_map.get(mongodb_collection, "ride_scenarios_vectors")
@@ -783,7 +958,16 @@ async def monitor_change_streams(
                     
                     if document:
                         # Process the document: generate description → create embedding → store in ChromaDB
-                        await process_document(document, collection_name, chromadb_collections)
+                        success = await process_document(document, collection_name, chromadb_collections)
+                        
+                        # Record the change for pipeline triggering (regardless of embedding success)
+                        # This ensures the pipeline knows about data changes even if embedding fails
+                        document_id = str(document.get("_id", "unknown"))
+                        operation = change["operationType"]
+                        change_tracker.record_change(collection_name, operation, document_id)
+                        
+                        if success:
+                            logger.debug(f"Change recorded and embedded: {collection_name}/{document_id}")
                     else:
                         logger.warning(f"Document not found for change in {collection_name}")
                         
@@ -861,7 +1045,9 @@ async def main():
                 "news_articles",         # From n8n NewsAPI workflow
                 "customers",             # Customer data
                 "historical_rides",      # Uploaded historical data
-                "competitor_prices"       # Uploaded competitor data
+                "competitor_prices",     # Uploaded competitor data
+                "pricing_strategies",    # Business rules & pricing strategies (→ strategy_knowledge_vectors)
+                "business_rules"         # Additional business rules (→ strategy_knowledge_vectors)
             ]
             
             logger.info(f"Step 3: Monitoring {len(collections_to_monitor)} collections:")
