@@ -10,6 +10,7 @@ Files are validated, processed with pandas, and stored in MongoDB.
 
 import pandas as pd
 import io
+import logging
 from datetime import datetime, timezone
 from typing import Dict, Any
 from fastapi import APIRouter, UploadFile, File, HTTPException, status
@@ -17,6 +18,8 @@ from fastapi.responses import JSONResponse
 
 from app.database import get_database
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
@@ -666,4 +669,303 @@ async def upload_competitor_data(file: UploadFile = File(...)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error processing file: {str(e)}"
+        )
+
+
+@router.post("/pricing-strategies")
+async def upload_pricing_strategies(file: UploadFile = File(...)):
+    """
+    Upload pricing strategies and business rules (JSON format).
+    
+    These rules are stored in MongoDB and processed by the Data Ingestion Agent
+    to create embeddings in `strategy_knowledge_vectors` ChromaDB collection.
+    
+    The Recommendation Agent uses this as its PRIMARY RAG source for
+    generating strategic recommendations.
+    
+    JSON format expected:
+    {
+        "pricing_rules": {
+            "location_based": [...],
+            "time_based": [...],
+            "loyalty_based": [...],
+            ...
+        }
+    }
+    
+    Each rule should have:
+    - rule_id: Unique identifier
+    - name: Human-readable name
+    - description: What the rule does
+    - condition: When to apply the rule
+    - action: What action to take
+    - expected_impact: Expected business impact
+    """
+    import json
+    
+    try:
+        # Validate file type
+        filename = file.filename.lower() if file.filename else ""
+        if not filename.endswith(".json"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only JSON files are supported for pricing strategies"
+            )
+        
+        # Read file content
+        content = await file.read()
+        
+        try:
+            data = json.loads(content.decode("utf-8"))
+        except json.JSONDecodeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid JSON format: {str(e)}"
+            )
+        
+        # Extract rules from the JSON structure
+        rules_to_insert = []
+        
+        # Get the pricing_rules section
+        pricing_rules = data.get("pricing_rules", data)
+        
+        # Process each category of rules
+        for category, rules in pricing_rules.items():
+            if isinstance(rules, list):
+                for rule in rules:
+                    if isinstance(rule, dict):
+                        # Add category to the rule
+                        rule["category"] = category
+                        rule["uploaded_at"] = datetime.now(timezone.utc).isoformat()
+                        rule["source"] = "pricing_strategies_upload"
+                        rules_to_insert.append(rule)
+        
+        # Also extract metadata and business objectives if present
+        if "metadata" in data:
+            metadata_doc = {
+                "rule_id": "METADATA",
+                "name": "Pricing Rules Metadata",
+                "category": "metadata",
+                "description": f"Pricing rules version {data['metadata'].get('version', '1.0')}",
+                **data["metadata"],
+                "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                "source": "pricing_strategies_upload"
+            }
+            rules_to_insert.append(metadata_doc)
+        
+        if "business_objectives" in data:
+            for goal in data["business_objectives"].get("primary_goals", []):
+                goal_doc = {
+                    "rule_id": f"GOAL_{goal.get('objective', 'UNKNOWN')}",
+                    "name": f"Business Objective: {goal.get('objective', 'Unknown')}",
+                    "category": "business_objectives",
+                    "description": f"{goal.get('objective')}: {goal.get('target')} via {goal.get('strategy')}",
+                    **goal,
+                    "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                    "source": "pricing_strategies_upload"
+                }
+                rules_to_insert.append(goal_doc)
+        
+        if "expected_outcomes" in data:
+            outcomes_doc = {
+                "rule_id": "EXPECTED_OUTCOMES",
+                "name": "Expected Business Outcomes",
+                "category": "expected_outcomes",
+                "description": f"Target revenue increase: {data['expected_outcomes'].get('revenue_increase', {}).get('target', 'N/A')}",
+                **data["expected_outcomes"],
+                "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                "source": "pricing_strategies_upload"
+            }
+            rules_to_insert.append(outcomes_doc)
+        
+        if not rules_to_insert:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No valid pricing rules found in the JSON file"
+            )
+        
+        # Store in MongoDB
+        database = get_database()
+        if database is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection not available"
+            )
+        
+        collection = database["pricing_strategies"]
+        
+        # Clear existing rules (optional - can be changed to upsert)
+        await collection.delete_many({"source": "pricing_strategies_upload"})
+        
+        # Insert new rules
+        result = await collection.insert_many(rules_to_insert)
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "success": True,
+                "rules_count": len(rules_to_insert),
+                "inserted_ids": len(result.inserted_ids),
+                "categories": list(set(r.get("category", "unknown") for r in rules_to_insert)),
+                "message": f"Successfully uploaded {len(rules_to_insert)} pricing rules. Data Ingestion Agent will create embeddings in strategy_knowledge_vectors."
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error processing pricing strategies: {str(e)}"
+        )
+
+
+@router.post("/sync-strategies-to-chromadb")
+async def sync_strategies_to_chromadb():
+    """
+    Manually sync pricing strategies from MongoDB to ChromaDB.
+    
+    This endpoint reads all pricing strategies from MongoDB and creates
+    embeddings in the strategy_knowledge_vectors ChromaDB collection.
+    
+    Use this after uploading pricing strategies or to refresh the vector store.
+    """
+    import chromadb
+    from pathlib import Path
+    from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
+    
+    try:
+        # Get database connection
+        database = get_database()
+        if database is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Database connection not available"
+            )
+        
+        # Fetch pricing strategies from MongoDB
+        collection = database["pricing_strategies"]
+        cursor = collection.find({})
+        strategies = await cursor.to_list(length=None)
+        
+        if not strategies:
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content={
+                    "success": True,
+                    "message": "No pricing strategies found in MongoDB",
+                    "documents_synced": 0
+                }
+            )
+        
+        logger.info(f"Found {len(strategies)} pricing strategies to sync")
+        
+        # Connect to ChromaDB
+        chroma_path = Path("chromadb_data")
+        chroma_client = chromadb.PersistentClient(path=str(chroma_path))
+        
+        # Create collection with OpenAI embeddings
+        api_key = settings.OPENAI_API_KEY
+        if api_key:
+            embedding_func = OpenAIEmbeddingFunction(
+                api_key=api_key,
+                model_name="text-embedding-3-small"
+            )
+            chroma_collection = chroma_client.get_or_create_collection(
+                name="strategy_knowledge_vectors",
+                embedding_function=embedding_func,
+                metadata={"description": "Pricing strategies and business rules (RAG source)"}
+            )
+        else:
+            chroma_collection = chroma_client.get_or_create_collection(
+                name="strategy_knowledge_vectors",
+                metadata={"description": "Pricing strategies and business rules (RAG source)"}
+            )
+        
+        # Clear existing documents to avoid duplicates
+        existing_count = chroma_collection.count()
+        if existing_count > 0:
+            # Get all existing IDs and delete them
+            existing = chroma_collection.get()
+            if existing['ids']:
+                chroma_collection.delete(ids=existing['ids'])
+            logger.info(f"Cleared {existing_count} existing documents")
+        
+        # Process each strategy
+        documents = []
+        metadatas = []
+        ids = []
+        
+        for i, strategy in enumerate(strategies):
+            # Create document text from strategy fields
+            doc_text = strategy.get('description', '')
+            if not doc_text:
+                parts = []
+                if 'category' in strategy:
+                    parts.append(f"Category: {strategy['category']}")
+                if 'rule' in strategy:
+                    parts.append(f"Rule: {strategy['rule']}")
+                if 'condition' in strategy:
+                    parts.append(f"Condition: {strategy['condition']}")
+                if 'action' in strategy:
+                    parts.append(f"Action: {strategy['action']}")
+                if 'objective' in strategy:
+                    parts.append(f"Objective: {strategy['objective']}")
+                if 'target' in strategy:
+                    parts.append(f"Target: {strategy['target']}")
+                if 'strategy' in strategy:
+                    parts.append(f"Strategy: {strategy['strategy']}")
+                doc_text = ' | '.join(parts) if parts else str({k: v for k, v in strategy.items() if k != '_id'})
+            
+            # Create metadata (excluding _id which is not JSON serializable)
+            metadata = {
+                "source": "pricing_strategies",
+                "category": strategy.get('category', 'unknown'),
+                "type": "pricing_rule",
+                "created_at": strategy.get('uploaded_at', datetime.now(timezone.utc).isoformat())
+            }
+            
+            # Create unique ID
+            doc_id = f"strategy_{i}_{strategy.get('category', 'unknown').replace(' ', '_')}"
+            
+            documents.append(doc_text)
+            metadatas.append(metadata)
+            ids.append(doc_id)
+        
+        # Add to ChromaDB collection
+        if documents:
+            chroma_collection.add(
+                documents=documents,
+                metadatas=metadatas,
+                ids=ids
+            )
+        
+        final_count = chroma_collection.count()
+        
+        # Get category breakdown
+        categories = {}
+        for meta in metadatas:
+            cat = meta.get('category', 'unknown')
+            categories[cat] = categories.get(cat, 0) + 1
+        
+        logger.info(f"Successfully synced {len(documents)} documents to ChromaDB")
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "success": True,
+                "message": f"Successfully synced {len(documents)} pricing strategies to ChromaDB",
+                "documents_synced": len(documents),
+                "collection_count": final_count,
+                "categories": categories
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error syncing strategies to ChromaDB: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error syncing strategies to ChromaDB: {str(e)}"
         )

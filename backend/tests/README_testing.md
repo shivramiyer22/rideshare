@@ -243,6 +243,120 @@ python3 tests/test_analysis_agent_api.py
 
 ---
 
+---
+
+## Agent Pipeline Tests
+
+### test_pipeline.py
+Tests for the Agent Pipeline Enhancement feature.
+
+**Test Coverage (16 tests):**
+
+#### Pipeline API Endpoints (8 tests)
+- ✅ `GET /pipeline/status` - Returns pipeline status with change tracker
+- ✅ `GET /pipeline/changes` - Returns pending MongoDB changes
+- ✅ `GET /pipeline/history` - Returns pipeline run history
+- ✅ `GET /pipeline/history?limit=5` - History with custom limit
+- ✅ `GET /pipeline/last-run` - Returns last pipeline run details
+- ✅ `POST /pipeline/trigger` without changes - Returns no_changes message
+- ✅ `POST /pipeline/trigger` with force=true - Forces pipeline run
+- ✅ `POST /pipeline/clear-changes` - Clears pending changes
+
+#### Chatbot Compatibility (3 tests)
+- ✅ Chatbot API still works after pipeline changes
+- ✅ Analytics API still works after pipeline changes
+- ✅ ML Forecast API still works after pipeline changes
+
+#### Pipeline Integration (3 tests)
+- ✅ Pipeline status structure validation
+- ✅ Pipeline history structure validation
+- ✅ Pipeline endpoints don't break health check
+
+#### Concurrent Access (2 tests)
+- ✅ Analytics works during pipeline status check
+- ✅ Chatbot works during pipeline operations
+
+**Key Features Tested:**
+- ChangeTracker class for MongoDB change tracking
+- Pipeline API endpoints (trigger, status, history)
+- Chatbot compatibility guarantee
+- No blocking of other operations during pipeline
+
+**Run Tests:**
+```bash
+cd backend
+python3 -m pytest tests/test_pipeline.py -v
+```
+
+**Prerequisites:**
+- Backend server running on localhost:8000
+- MongoDB connection configured
+
+**Test Results:** ✅ 16/16 tests passed (100% pass rate)
+
+**Last Run:** December 2, 2025
+
+---
+
+## ML Combined Training Tests
+
+### test_ml_combined_training.py
+Tests for ML Prophet model training with combined HWCO + competitor data.
+
+**Test Coverage (14 tests):**
+
+#### ML Train Endpoint (3 tests)
+- ✅ Train endpoint exists and returns valid status
+- ✅ Train response includes data_sources breakdown (hwco_rows, competitor_rows)
+- ✅ Success message mentions combined data sources
+
+#### ML Forecast Endpoint (3 tests)
+- ✅ 30-day forecast for STANDARD pricing
+- ✅ 60-day forecast for CONTRACTED pricing
+- ✅ 90-day forecast for CUSTOM pricing
+
+#### Pipeline Retraining (2 tests)
+- ✅ Pipeline status endpoint available
+- ✅ Pipeline can be triggered with force option
+
+#### Data Standardization (2 tests)
+- ✅ Analytics metrics include competitor data
+- ✅ Health check still works after changes
+
+#### ML Training Metadata (1 test)
+- ✅ Training stores data source information
+
+#### Regressor Integration (1 test)
+- ✅ Forecast uses HWCO-specific patterns (company_HWCO regressor)
+
+#### Error Handling (2 tests)
+- ✅ Invalid pricing model handled (400/422)
+- ✅ Missing pricing model handled (422)
+
+**Key Features Tested:**
+- Combined HWCO + competitor data loading
+- Data standardization (`_standardize_record_for_training`)
+- `Rideshare_Company` regressor (HWCO vs COMPETITOR)
+- `company_HWCO` regressor set to 1 for HWCO-specific forecasts
+- Data source breakdown in training response
+- Training metadata with hwco_rows and competitor_rows
+
+**Run Tests:**
+```bash
+cd backend
+python3 -m pytest tests/test_ml_combined_training.py -v
+```
+
+**Prerequisites:**
+- Backend server running on localhost:8000
+- MongoDB connection with historical_rides and competitor_prices collections
+
+**Test Results:** ✅ 14/14 tests passed (100% pass rate)
+
+**Last Run:** December 2, 2025
+
+---
+
 ## Total Test Summary
 
 ### All Test Suites
@@ -261,5 +375,14 @@ python3 tests/test_analysis_agent_api.py
 | WebSocket Endpoint | 5 | ✅ 100% |
 | OpenAI Connection | 4 | ✅ 100% |
 | ChromaDB Collections | 5 | ✅ 100% |
+| **Agent Pipeline** | **16** | ✅ **100%** |
+| **ML Combined Training** | **14** | ✅ **100%** |
 
-**Grand Total:** 102+ tests, 100% pass rate
+**Grand Total:** 132+ tests, 100% pass rate
+
+### Combined Pipeline + ML Test Run
+```bash
+# Run both test suites together (30 tests)
+python3 -m pytest tests/test_pipeline.py tests/test_ml_combined_training.py -v
+```
+**Result:** ✅ 30/30 tests passed

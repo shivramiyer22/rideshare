@@ -424,6 +424,18 @@ class RideshareForecastModel:
                     prophet_data[col] = vehicle_dummies[col].values
                 logger.info(f"  → Added Vehicle_Type regressors: {list(vehicle_dummies.columns)}")
             
+            # Add Rideshare_Company as regressor (HWCO vs COMPETITOR)
+            # This allows the model to learn both:
+            # - Shared patterns across all rideshare (weekly cycles, rush hours)
+            # - Company-specific patterns (HWCO vs competitor differences)
+            # When forecasting, we use HWCO values to get HWCO-specific predictions
+            if 'Rideshare_Company' in historical_data.columns:
+                company_dummies = pd.get_dummies(historical_data['Rideshare_Company'], prefix='company')
+                for col in company_dummies.columns:
+                    prophet_data[col] = company_dummies[col].values
+                logger.info(f"  → Added Rideshare_Company regressors: {list(company_dummies.columns)}")
+                logger.info("    (Model will learn patterns from both HWCO and competitor data)")
+            
             # Remove any rows with NaN values in required columns
             prophet_data = prophet_data.dropna(subset=['ds', 'y'])
             
@@ -456,10 +468,10 @@ class RideshareForecastModel:
             # Step 4a: Add all regressors to Prophet model
             # Regressors are extra variables that affect the forecast
             # Prophet will learn how each regressor affects demand
-            # We add ALL regressor columns (pricing_, time_, demand_, location_, loyalty_, vehicle_)
+            # We add ALL regressor columns (pricing_, time_, demand_, location_, loyalty_, vehicle_, company_)
             regressor_cols = [
                 col for col in prophet_data.columns 
-                if col.startswith(('pricing_', 'time_', 'demand_', 'location_', 'loyalty_', 'vehicle_'))
+                if col.startswith(('pricing_', 'time_', 'demand_', 'location_', 'loyalty_', 'vehicle_', 'company_'))
             ]
             
             for regressor_col in regressor_cols:
@@ -620,6 +632,18 @@ class RideshareForecastModel:
                         logger.info(f"  → Forecasting for {pricing_model} pricing (regressor: {target_regressor})")
                     else:
                         logger.warning(f"  → Regressor {target_regressor} not found in model.")
+                
+                # Set company regressor to HWCO for forecasting
+                # The model was trained on both HWCO and competitor data, but we want HWCO predictions
+                company_regressor_cols = [col for col in all_regressor_cols if col.startswith('company_')]
+                if company_regressor_cols:
+                    hwco_regressor = "company_HWCO"
+                    if hwco_regressor in company_regressor_cols:
+                        # Set HWCO to 1 for future dates (we want HWCO-specific predictions)
+                        future.loc[future['ds'] > last_training_date, hwco_regressor] = 1
+                        logger.info(f"  → Using HWCO-specific patterns (regressor: {hwco_regressor})")
+                    else:
+                        logger.info("  → company_HWCO regressor not found, using combined market patterns")
                 
                 # For other regressors (loyalty, location, vehicle), we use average/typical values
                 # In production, you might want to allow specifying these via parameters
