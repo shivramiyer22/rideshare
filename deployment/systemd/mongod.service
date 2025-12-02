@@ -1,0 +1,23 @@
+# Note: This is a reference file for native MongoDB installation
+# MongoDB service is typically installed via package manager
+# This file shows the expected service configuration
+
+[Unit]
+Description=MongoDB Database Server
+Documentation=https://docs.mongodb.com/manual
+After=network.target
+
+[Service]
+Type=forking
+User=mongodb
+ExecStart=/usr/bin/mongod --config /etc/mongod.conf
+ExecReload=/bin/kill -s HUP $MAINPID
+PIDFile=/var/lib/mongodb/mongod.lock
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+
+
+

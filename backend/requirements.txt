@@ -1,0 +1,50 @@
+# FastAPI and ASGI server
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# Pydantic v2 (required for LangChain 1.0+)
+pydantic>=2.7.4,<3.0.0
+# email-validator required for EmailStr validation in Pydantic models
+email-validator>=2.0.0
+# pydantic-settings should match pydantic version for compatibility
+pydantic-settings>=2.0.0,<3.0.0
+# Authentication and security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.6
+
+# Database ORM (if needed for future features)
+sqlalchemy==2.0.23
+# MongoDB drivers (async)
+pymongo==4.6.0
+motor==3.3.2
+
+# Redis client (async)
+redis==5.0.1
+# LangChain v1.0+ packages (compatible versions)
+# Using flexible constraints to allow pip to resolve compatible versions
+langchain>=1.0.0
+langchain-core>=1.0.0
+langgraph>=1.0.0
+langchain-openai>=1.0.0
+# langchain-community may be on 0.x but is compatible with langchain 1.0+
+langchain-community>=0.3.0
+# ChromaDB (used directly, not through langchain-community)
+chromadb>=0.4.22
+# OpenAI for embeddings and GPT-4
+openai>=1.0.0
+# Prophet ML forecasting
+prophet==1.1.5
+# Prophet dependencies (pandas and numpy versions compatible with Prophet 1.1.5)
+pandas==2.1.4
+numpy>=1.24.0,<2.0.0
+# Testing framework
+pytest==7.4.3
+pytest-asyncio==0.21.1
+
+# HTTP client for testing (chromadb requires >=0.27.0)
+httpx>=0.27.0
+
+# Background task scheduling
+apscheduler>=3.10.4
+

@@ -1,0 +1,556 @@
+{
+  "metadata": {
+    "version": "1.0.0",
+    "created_at": "2025-12-02",
+    "data_source": "HWCO historical data vs Lyft competitor analysis",
+    "total_hwco_revenue": 372502.69,
+    "total_lyft_revenue": 385169.51,
+    "revenue_gap_percent": 3.4,
+    "target_revenue_increase": "15-25%"
+  },
+
+  "business_objectives": {
+    "primary_goals": [
+      {
+        "objective": "MAXIMIZE_REVENUE",
+        "target": "15-25% increase",
+        "current_gap": "3.4% behind Lyft",
+        "strategy": "Implement surge pricing, optimize location/time pricing"
+      },
+      {
+        "objective": "MAXIMIZE_PROFIT_MARGINS",
+        "target": "Maintain 40% margin minimum",
+        "strategy": "Optimize unit price without losing customers"
+      },
+      {
+        "objective": "STAY_COMPETITIVE",
+        "target": "Within 5-10% of competitor pricing",
+        "strategy": "Real-time competitor price monitoring and adjustment"
+      },
+      {
+        "objective": "CUSTOMER_RETENTION",
+        "target": "10-15% churn reduction",
+        "strategy": "Loyalty program enhancements, Gold tier protection"
+      },
+      {
+        "objective": "DATA_DRIVEN_DECISIONS",
+        "target": "100% automated pricing",
+        "strategy": "ML-powered pricing with Prophet forecasting"
+      }
+    ]
+  },
+
+  "pricing_rules": {
+    "location_based": [
+      {
+        "rule_id": "LOC_001",
+        "name": "Urban Premium Pricing",
+        "description": "Urban routes are underpriced by 14.9% vs Lyft. Increase urban pricing to capture value.",
+        "condition": {
+          "location_category": "Urban"
+        },
+        "action": {
+          "type": "PRICE_MULTIPLIER",
+          "multiplier": 1.12,
+          "max_multiplier": 1.15
+        },
+        "expected_impact": {
+          "revenue_increase": "12-15%",
+          "rationale": "Lyft charges $417.97 avg vs HWCO $363.67 for Urban. Room to increase."
+        }
+      },
+      {
+        "rule_id": "LOC_002",
+        "name": "Rural Competitive Pricing",
+        "description": "Rural routes are overpriced by 13.4% vs Lyft. Reduce to stay competitive.",
+        "condition": {
+          "location_category": "Rural"
+        },
+        "action": {
+          "type": "PRICE_MULTIPLIER",
+          "multiplier": 0.90,
+          "min_multiplier": 0.87
+        },
+        "expected_impact": {
+          "revenue_impact": "-10% per ride",
+          "volume_increase": "+15-20% rides",
+          "net_revenue": "+5-8%",
+          "rationale": "Lyft charges $329 vs HWCO $379.94. We're losing rural customers."
+        }
+      },
+      {
+        "rule_id": "LOC_003",
+        "name": "Suburban Maintain Pricing",
+        "description": "Suburban pricing is competitive (<1% difference). Maintain current rates.",
+        "condition": {
+          "location_category": "Suburban"
+        },
+        "action": {
+          "type": "MAINTAIN",
+          "note": "Current $374.32 vs Lyft $373.06 is optimal"
+        },
+        "expected_impact": {
+          "revenue_impact": "Neutral",
+          "rationale": "Already competitive. Focus on volume."
+        }
+      }
+    ],
+
+    "time_based": [
+      {
+        "rule_id": "TIME_001",
+        "name": "Morning Rush Surge",
+        "description": "Morning (6-10 AM) is underpriced by 11.6% vs Lyft. Apply surge pricing.",
+        "condition": {
+          "time_of_day": "Morning",
+          "hours": "06:00-10:00"
+        },
+        "action": {
+          "type": "SURGE_MULTIPLIER",
+          "base_multiplier": 1.10,
+          "demand_based_max": 1.25
+        },
+        "expected_impact": {
+          "revenue_increase": "10-12%",
+          "rationale": "Lyft charges $421.90 vs HWCO $378.06. High commute demand."
+        }
+      },
+      {
+        "rule_id": "TIME_002",
+        "name": "Evening Rush Surge",
+        "description": "Evening (5-9 PM) is underpriced by 12.9% vs Lyft. Apply surge pricing.",
+        "condition": {
+          "time_of_day": "Evening",
+          "hours": "17:00-21:00"
+        },
+        "action": {
+          "type": "SURGE_MULTIPLIER",
+          "base_multiplier": 1.12,
+          "demand_based_max": 1.30
+        },
+        "expected_impact": {
+          "revenue_increase": "12-15%",
+          "rationale": "Lyft charges $411.32 vs HWCO $364.25. Peak demand period."
+        }
+      },
+      {
+        "rule_id": "TIME_003",
+        "name": "Afternoon Off-Peak Discount",
+        "description": "Afternoon (11 AM-5 PM) can be priced competitively. Lyft is 11% lower.",
+        "condition": {
+          "time_of_day": "Afternoon",
+          "hours": "11:00-17:00"
+        },
+        "action": {
+          "type": "DISCOUNT_MULTIPLIER",
+          "multiplier": 0.92,
+          "min_multiplier": 0.88
+        },
+        "expected_impact": {
+          "revenue_impact": "-8%",
+          "volume_increase": "+12-15%",
+          "net_revenue": "+4-7%",
+          "rationale": "Lyft charges $338.87 vs HWCO $380.82. Capture off-peak volume."
+        }
+      },
+      {
+        "rule_id": "TIME_004",
+        "name": "Night Steady Pricing",
+        "description": "Night pricing is competitive (<1% difference). Maintain but monitor.",
+        "condition": {
+          "time_of_day": "Night",
+          "hours": "21:00-06:00"
+        },
+        "action": {
+          "type": "MAINTAIN",
+          "dynamic_adjustment": true,
+          "note": "Adjust based on real-time demand"
+        },
+        "expected_impact": {
+          "revenue_impact": "Neutral to +5%",
+          "rationale": "HWCO $367.01 vs Lyft $368.32. Already competitive."
+        }
+      }
+    ],
+
+    "loyalty_based": [
+      {
+        "rule_id": "LOYALTY_001",
+        "name": "Gold Customer Protection",
+        "description": "Protect Gold customers from excessive surge pricing to reduce churn.",
+        "condition": {
+          "customer_loyalty_status": "Gold"
+        },
+        "action": {
+          "type": "SURGE_CAP",
+          "max_surge_multiplier": 1.25,
+          "discount_on_standard": 0.05
+        },
+        "expected_impact": {
+          "churn_reduction": "10-12%",
+          "revenue_impact": "-3%",
+          "lifetime_value_increase": "+15%",
+          "rationale": "Lyft has 45.4% Gold vs HWCO 31.3%. Must retain premium customers."
+        }
+      },
+      {
+        "rule_id": "LOYALTY_002",
+        "name": "Silver Upgrade Incentive",
+        "description": "Encourage Silver to Gold conversion with slight discount and perks.",
+        "condition": {
+          "customer_loyalty_status": "Silver",
+          "number_of_past_rides": { "gte": 25 }
+        },
+        "action": {
+          "type": "DISCOUNT_MULTIPLIER",
+          "multiplier": 0.97,
+          "upgrade_bonus": "Free upgrade to Gold after 50 rides"
+        },
+        "expected_impact": {
+          "conversion_rate": "15-20% to Gold",
+          "revenue_impact": "-2%",
+          "long_term_revenue": "+8%",
+          "rationale": "Silver pays 3.4% less at Lyft. Small discount encourages loyalty."
+        }
+      },
+      {
+        "rule_id": "LOYALTY_003",
+        "name": "Regular Customer Premium",
+        "description": "Regular customers pay market rate. No discount, but no penalty.",
+        "condition": {
+          "customer_loyalty_status": "Regular"
+        },
+        "action": {
+          "type": "STANDARD_PRICING",
+          "conversion_incentive": "10% discount on 5th ride for signup"
+        },
+        "expected_impact": {
+          "revenue_neutral": true,
+          "conversion_rate": "20% to Silver",
+          "rationale": "Lyft charges 12.3% more to Regular. Room for conversion incentives."
+        }
+      }
+    ],
+
+    "demand_based": [
+      {
+        "rule_id": "DEMAND_001",
+        "name": "High Demand Surge",
+        "description": "When demand exceeds supply by 40%+, apply surge pricing.",
+        "condition": {
+          "supply_by_demand": { "lt": 60 },
+          "demand_profile": "HIGH"
+        },
+        "action": {
+          "type": "SURGE_MULTIPLIER",
+          "formula": "1.0 + (1 - supply_ratio) * 1.5",
+          "min_multiplier": 1.3,
+          "max_multiplier": 2.0
+        },
+        "expected_impact": {
+          "revenue_increase": "30-50% during surge",
+          "rationale": "HWCO has 36.7% HIGH demand vs only 43.8% supply. Major opportunity."
+        }
+      },
+      {
+        "rule_id": "DEMAND_002",
+        "name": "Medium Demand Standard",
+        "description": "Medium demand - apply light surge if supply is constrained.",
+        "condition": {
+          "supply_by_demand": { "gte": 60, "lt": 80 },
+          "demand_profile": "MEDIUM"
+        },
+        "action": {
+          "type": "CONDITIONAL_SURGE",
+          "multiplier": 1.1,
+          "condition": "Apply only if supply < 65%"
+        },
+        "expected_impact": {
+          "revenue_increase": "5-10%",
+          "rationale": "45.4% of rides are MEDIUM demand. Light optimization."
+        }
+      },
+      {
+        "rule_id": "DEMAND_003",
+        "name": "Low Demand Discount",
+        "description": "Low demand periods - offer discounts to increase volume.",
+        "condition": {
+          "supply_by_demand": { "gte": 80 },
+          "demand_profile": "LOW"
+        },
+        "action": {
+          "type": "DISCOUNT_MULTIPLIER",
+          "multiplier": 0.90,
+          "promo_code": "LOWDEMAND10"
+        },
+        "expected_impact": {
+          "volume_increase": "+20-30%",
+          "revenue_impact": "-10% per ride",
+          "net_revenue": "+10-15%",
+          "rationale": "Only 17.9% of HWCO rides are LOW demand. Opportunity to grow."
+        }
+      }
+    ],
+
+    "pricing_model_optimization": [
+      {
+        "rule_id": "MODEL_001",
+        "name": "Increase CONTRACTED Adoption",
+        "description": "Push more customers to CONTRACTED pricing for predictable revenue.",
+        "target": {
+          "current_contracted": "33.7%",
+          "target_contracted": "50%+",
+          "competitor_contracted": "56.1%"
+        },
+        "action": {
+          "type": "INCENTIVE",
+          "contracted_discount": "5% vs STANDARD",
+          "minimum_rides": 10
+        },
+        "expected_impact": {
+          "revenue_predictability": "+25%",
+          "customer_retention": "+12%",
+          "rationale": "Lyft has 56.1% CONTRACTED. Predictable pricing = loyal customers."
+        }
+      },
+      {
+        "rule_id": "MODEL_002",
+        "name": "Reduce CUSTOM Pricing",
+        "description": "Minimize CUSTOM pricing which is unpredictable and inefficient.",
+        "target": {
+          "current_custom": "7.2%",
+          "target_custom": "<2%",
+          "competitor_custom": "1.1%"
+        },
+        "action": {
+          "type": "PHASE_OUT",
+          "strategy": "Convert CUSTOM to STANDARD with volume discounts"
+        },
+        "expected_impact": {
+          "operational_efficiency": "+15%",
+          "pricing_consistency": "+20%",
+          "rationale": "Lyft has only 1.1% CUSTOM. Too much CUSTOM = revenue leakage."
+        }
+      },
+      {
+        "rule_id": "MODEL_003",
+        "name": "STANDARD Optimization",
+        "description": "Optimize STANDARD pricing to maximize revenue per ride.",
+        "current": {
+          "hwco_standard_avg": 365.44,
+          "lyft_standard_avg": 415.27,
+          "gap": "+13.6%"
+        },
+        "action": {
+          "type": "PRICE_INCREASE",
+          "target_increase": "10%",
+          "phased_rollout": "5% now, 5% in 30 days"
+        },
+        "expected_impact": {
+          "revenue_increase": "8-10%",
+          "rationale": "Lyft charges $415.27 vs HWCO $365.44 for STANDARD. Significant gap."
+        }
+      }
+    ],
+
+    "vehicle_based": [
+      {
+        "rule_id": "VEHICLE_001",
+        "name": "Premium Vehicle Surge",
+        "description": "Premium vehicles should command higher prices during peak demand.",
+        "condition": {
+          "vehicle_type": "Premium",
+          "demand_profile": ["HIGH", "MEDIUM"]
+        },
+        "action": {
+          "type": "PREMIUM_MULTIPLIER",
+          "base_premium": 1.20,
+          "surge_premium": 1.35
+        },
+        "expected_impact": {
+          "revenue_increase": "15-20%",
+          "rationale": "Top 10% revenue segment uses Premium vehicles."
+        }
+      },
+      {
+        "rule_id": "VEHICLE_002",
+        "name": "Economy Value Pricing",
+        "description": "Economy vehicles priced competitively to capture price-sensitive customers.",
+        "condition": {
+          "vehicle_type": "Economy"
+        },
+        "action": {
+          "type": "VALUE_PRICING",
+          "base_discount": 0.15,
+          "volume_target": "+25%"
+        },
+        "expected_impact": {
+          "volume_increase": "+20-25%",
+          "market_share": "+5%",
+          "rationale": "Capture price-sensitive segment Lyft might be losing."
+        }
+      }
+    ],
+
+    "supply_management": [
+      {
+        "rule_id": "SUPPLY_001",
+        "name": "Critical Supply Shortage Surge",
+        "description": "When supply/demand ratio drops below 50%, trigger aggressive surge.",
+        "condition": {
+          "supply_by_demand": { "lt": 50 }
+        },
+        "action": {
+          "type": "CRITICAL_SURGE",
+          "multiplier": 1.75,
+          "driver_bonus": "1.5x earnings",
+          "eta_warning": true
+        },
+        "expected_impact": {
+          "driver_availability": "+30%",
+          "revenue_increase": "+40-60%",
+          "rationale": "HWCO avg supply 43.8% vs Lyft 65.8%. Critical shortage issue."
+        }
+      },
+      {
+        "rule_id": "SUPPLY_002",
+        "name": "Healthy Supply Standard",
+        "description": "When supply/demand is healthy (65%+), standard pricing.",
+        "condition": {
+          "supply_by_demand": { "gte": 65 }
+        },
+        "action": {
+          "type": "STANDARD_PRICING",
+          "note": "No surge needed when supply is adequate"
+        },
+        "expected_impact": {
+          "customer_satisfaction": "+15%",
+          "rationale": "Lyft maintains 65.8% supply. Target for HWCO."
+        }
+      }
+    ],
+
+    "competitive_response": [
+      {
+        "rule_id": "COMP_001",
+        "name": "Urban Price Match",
+        "description": "Match Lyft urban pricing within 5% to prevent customer loss.",
+        "condition": {
+          "location_category": "Urban",
+          "competitor_price_available": true
+        },
+        "action": {
+          "type": "PRICE_MATCH",
+          "target_gap": "5% below Lyft",
+          "min_margin": "35%"
+        },
+        "expected_impact": {
+          "market_share": "+5-8%",
+          "rationale": "Urban is highest volume. Must stay competitive."
+        }
+      },
+      {
+        "rule_id": "COMP_002",
+        "name": "Rural Undercut",
+        "description": "Undercut Lyft in Rural by 10% to capture market share.",
+        "condition": {
+          "location_category": "Rural",
+          "competitor_price_available": true
+        },
+        "action": {
+          "type": "UNDERCUT",
+          "target_gap": "10% below Lyft",
+          "min_price": 250
+        },
+        "expected_impact": {
+          "market_share": "+10-15%",
+          "rationale": "Rural is underserved by Lyft. Opportunity to dominate."
+        }
+      }
+    ],
+
+    "event_based": [
+      {
+        "rule_id": "EVENT_001",
+        "name": "Major Event Surge",
+        "description": "Apply surge pricing for major events (sports, concerts, conferences).",
+        "condition": {
+          "event_detected": true,
+          "expected_attendees": { "gte": 5000 }
+        },
+        "action": {
+          "type": "EVENT_SURGE",
+          "pre_event_multiplier": 1.5,
+          "during_event_multiplier": 2.0,
+          "post_event_multiplier": 1.75,
+          "timing": {
+            "start_before_hours": 2,
+            "end_after_hours": 1
+          }
+        },
+        "expected_impact": {
+          "revenue_increase": "40-60% during event",
+          "rationale": "Events cause demand spikes. Must capitalize."
+        }
+      },
+      {
+        "rule_id": "EVENT_002",
+        "name": "Weather Event Adjustment",
+        "description": "Adjust pricing during adverse weather conditions.",
+        "condition": {
+          "weather": ["rain", "snow", "extreme_heat"]
+        },
+        "action": {
+          "type": "WEATHER_SURGE",
+          "multiplier": 1.25,
+          "driver_incentive": "+20%"
+        },
+        "expected_impact": {
+          "driver_availability": "+20%",
+          "revenue_increase": "+20-25%",
+          "rationale": "Weather increases demand and reduces supply. Pricing should reflect."
+        }
+      }
+    ]
+  },
+
+  "implementation_priority": {
+    "phase_1_immediate": [
+      "TIME_001 - Morning Rush Surge",
+      "TIME_002 - Evening Rush Surge",
+      "DEMAND_001 - High Demand Surge",
+      "SUPPLY_001 - Critical Supply Shortage Surge"
+    ],
+    "phase_2_week_1": [
+      "LOC_001 - Urban Premium Pricing",
+      "LOC_002 - Rural Competitive Pricing",
+      "LOYALTY_001 - Gold Customer Protection",
+      "MODEL_003 - STANDARD Optimization"
+    ],
+    "phase_3_week_2": [
+      "MODEL_001 - Increase CONTRACTED Adoption",
+      "VEHICLE_001 - Premium Vehicle Surge",
+      "COMP_001 - Urban Price Match",
+      "EVENT_001 - Major Event Surge"
+    ],
+    "phase_4_month_1": [
+      "LOYALTY_002 - Silver Upgrade Incentive",
+      "MODEL_002 - Reduce CUSTOM Pricing",
+      "DEMAND_003 - Low Demand Discount",
+      "EVENT_002 - Weather Event Adjustment"
+    ]
+  },
+
+  "expected_outcomes": {
+    "revenue_increase": {
+      "conservative": "15%",
+      "target": "20%",
+      "optimistic": "25%"
+    },
+    "profit_margin_improvement": "+5-8%",
+    "customer_retention": "+12-15%",
+    "market_share_gain": "+5-10%",
+    "gold_customer_ratio": "From 31.3% to 40%+",
+    "supply_demand_ratio": "From 43.8% to 60%+"
+  }
+}
