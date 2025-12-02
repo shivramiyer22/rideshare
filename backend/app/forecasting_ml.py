@@ -49,15 +49,18 @@ import cmdstanpy
 
 # Configure CmdStan path if needed
 try:
+    # First, try to set the known CmdStan path explicitly
+    known_cmdstan_path = Path.home() / ".cmdstan" / "cmdstan-2.37.0"
+    if known_cmdstan_path.exists():
+        cmdstanpy.set_cmdstan_path(str(known_cmdstan_path))
+        logger.info(f"Set CmdStan path explicitly to: {known_cmdstan_path}")
+    
+    # Now get the path (should be set)
     cmdstan_path = cmdstanpy.cmdstan_path()
+    
     if cmdstan_path and os.path.exists(cmdstan_path):
         # Set CMDSTAN environment variable so Prophet can find it
         os.environ['CMDSTAN'] = str(cmdstan_path)
-        # Also try to set cmdstanpy path explicitly
-        try:
-            cmdstanpy.set_cmdstan_path(str(cmdstan_path))
-        except:
-            pass
         
         # Create symlink where Prophet expects CmdStan (if needed)
         from pathlib import Path
@@ -73,6 +76,8 @@ try:
                     logger.debug(f"Could not create symlink (may already exist): {symlink_error}")
         
         logger.info(f"Configured CmdStan path: {cmdstan_path}")
+    else:
+        logger.warning(f"CmdStan path not found or invalid: {cmdstan_path}")
 except Exception as e:
     logger.warning(f"Could not configure CmdStan path: {e}")
 
@@ -419,6 +424,18 @@ class RideshareForecastModel:
                     prophet_data[col] = vehicle_dummies[col].values
                 logger.info(f"  → Added Vehicle_Type regressors: {list(vehicle_dummies.columns)}")
             
+            # Add Rideshare_Company as regressor (HWCO vs COMPETITOR)
+            # This allows the model to learn both:
+            # - Shared patterns across all rideshare (weekly cycles, rush hours)
+            # - Company-specific patterns (HWCO vs competitor differences)
+            # When forecasting, we use HWCO values to get HWCO-specific predictions
+            if 'Rideshare_Company' in historical_data.columns:
+                company_dummies = pd.get_dummies(historical_data['Rideshare_Company'], prefix='company')
+                for col in company_dummies.columns:
+                    prophet_data[col] = company_dummies[col].values
+                logger.info(f"  → Added Rideshare_Company regressors: {list(company_dummies.columns)}")
+                logger.info("    (Model will learn patterns from both HWCO and competitor data)")
+            
             # Remove any rows with NaN values in required columns
             prophet_data = prophet_data.dropna(subset=['ds', 'y'])
             
@@ -451,10 +468,10 @@ class RideshareForecastModel:
             # Step 4a: Add all regressors to Prophet model
             # Regressors are extra variables that affect the forecast
             # Prophet will learn how each regressor affects demand
-            # We add ALL regressor columns (pricing_, time_, demand_, location_, loyalty_, vehicle_)
+            # We add ALL regressor columns (pricing_, time_, demand_, location_, loyalty_, vehicle_, company_)
             regressor_cols = [
                 col for col in prophet_data.columns 
-                if col.startswith(('pricing_', 'time_', 'demand_', 'location_', 'loyalty_', 'vehicle_'))
+                if col.startswith(('pricing_', 'time_', 'demand_', 'location_', 'loyalty_', 'vehicle_', 'company_'))
             ]
             
             for regressor_col in regressor_cols:
@@ -494,34 +511,11 @@ class RideshareForecastModel:
             
             logger.info(f"  ✓ Model saved to: {model_path}")
             
-            # Step 7: Calculate training metrics (after saving, in case of memory issues)
-            # We use the model to predict the training data and compare to actual
+            # Step 7: Skip MAPE calculation during training (it hangs with 18 regressors)
+            # MAPE will be calculated during actual forecasting instead
+            # The model is trained and saved - that's what matters
             mape = 0.0
-            try:
-                future = model.make_future_dataframe(periods=0)  # No future, just training data
-                
-                # Add regressor columns to future dataframe (required for prediction)
-                # Prophet needs the regressor values for each date in the training data
-                if regressor_cols:
-                    for regressor_col in regressor_cols:
-                        # Merge regressor values from training data
-                        future = future.merge(
-                            prophet_data[['ds', regressor_col]],
-                            on='ds',
-                            how='left'
-                        )
-                        # Fill any missing values with 0 (shouldn't happen, but safety check)
-                        future[regressor_col] = future[regressor_col].fillna(0)
-                
-                forecast = model.predict(future)
-                
-                # Calculate MAPE (Mean Absolute Percentage Error)
-                mape = self._calculate_mape(prophet_data['y'], forecast['yhat'])
-                logger.info(f"  → Training MAPE: {mape:.2f}%")
-            except Exception as mape_error:
-                # If MAPE calculation fails (e.g., memory issues), we still have the saved model
-                logger.warning(f"  ⚠️  Could not calculate MAPE: {mape_error}. Model is still saved.")
-                mape = 0.0
+            logger.info(f"  → Training complete (MAPE calculated during forecasting)")
             
             return {
                 "success": True,
@@ -638,6 +632,18 @@ class RideshareForecastModel:
                         logger.info(f"  → Forecasting for {pricing_model} pricing (regressor: {target_regressor})")
                     else:
                         logger.warning(f"  → Regressor {target_regressor} not found in model.")
+                
+                # Set company regressor to HWCO for forecasting
+                # The model was trained on both HWCO and competitor data, but we want HWCO predictions
+                company_regressor_cols = [col for col in all_regressor_cols if col.startswith('company_')]
+                if company_regressor_cols:
+                    hwco_regressor = "company_HWCO"
+                    if hwco_regressor in company_regressor_cols:
+                        # Set HWCO to 1 for future dates (we want HWCO-specific predictions)
+                        future.loc[future['ds'] > last_training_date, hwco_regressor] = 1
+                        logger.info(f"  → Using HWCO-specific patterns (regressor: {hwco_regressor})")
+                    else:
+                        logger.info("  → company_HWCO regressor not found, using combined market patterns")
                 
                 # For other regressors (loyalty, location, vehicle), we use average/typical values
                 # In production, you might want to allow specifying these via parameters

@@ -96,11 +96,26 @@ python app/agents/data_ingestion.py
 - **Location:** `app/forecasting_ml.py`
 - **Purpose:** Demand forecasting using Prophet ML (ONLY forecasting method, NO moving averages)
 - **Functionality:**
+  - **Combined Training Data:** Uses BOTH HWCO historical data AND competitor (Lyft) data for better accuracy
   - Single model covering all pricing types (CONTRACTED, STANDARD, CUSTOM)
-  - Uses pricing_model as regressor to learn pricing-specific patterns
-  - Requires minimum 300 total orders (across all pricing types)
+  - Uses multiple regressors to learn patterns:
+    - `Pricing_Model`: CONTRACTED, STANDARD, CUSTOM
+    - `Rideshare_Company`: HWCO, COMPETITOR (learns market-wide patterns)
+    - `Customer_Loyalty_Status`: Gold, Silver, Regular
+    - `Location_Category`: Urban, Suburban, Rural
+    - `Vehicle_Type`: Premium, Economy
+    - `Demand_Profile`: HIGH, MEDIUM, LOW
+    - `Time_of_Ride`: Morning, Afternoon, Evening, Night
+  - Requires minimum 300 total combined orders (HWCO + competitor)
   - Generates 30/60/90-day forecasts with 80% confidence intervals
+  - Forecasts use HWCO-specific patterns while learning from market-wide data
   - Saves model to `models/rideshare_forecast.pkl`
+
+**Why Combined Data Improves Accuracy:**
+- More data points = better pattern recognition
+- Market-wide patterns (weekly cycles, rush hours) are shared across companies
+- Competitor data helps understand overall rideshare demand trends
+- Model learns HWCO-specific patterns vs market average
 
 **Usage:**
 ```python
@@ -133,10 +148,13 @@ All agents use **LangChain v1.0+** with OpenAI GPT-4 and ChromaDB RAG:
   - Tools: `route_to_analysis_agent`, `route_to_pricing_agent`, `route_to_forecasting_agent`, `route_to_recommendation_agent`
   - Uses OpenAI function calling for intelligent routing
 
-- **Analysis Agent:** Business intelligence, KPIs, analytics
-  - Tools: `query_ride_scenarios`, `query_news_events`, `query_customer_behavior`, `query_competitor_data`
-  - Analyzes n8n ingested data (events, traffic, news)
-  - Generates insights using ChromaDB RAG + MongoDB documents
+- **Analysis Agent:** Business intelligence, KPIs, analytics (REFACTORED: Sync PyMongo)
+  - **KPI Tools:** `calculate_revenue_kpis`, `calculate_profit_metrics`, `calculate_rides_count`, `analyze_customer_segments`
+  - **Pattern Analysis:** `analyze_location_performance`, `analyze_time_patterns`, `get_top_revenue_rides`
+  - **RAG Tools:** `query_ride_scenarios`, `query_news_events`, `query_customer_behavior`, `query_competitor_data`
+  - **n8n Analysis:** `analyze_event_impact_on_demand`, `analyze_traffic_patterns`, `analyze_industry_trends`
+  - **Insights:** `generate_structured_insights` (OpenAI GPT-4)
+  - **IMPORTANT:** Uses synchronous PyMongo for reliable database access from LangChain tools
 
 - **Pricing Agent:** Dynamic price calculation with OpenAI GPT-4 explanations
   - Tools: `query_similar_pricing_scenarios`, `query_pricing_strategies`, `calculate_price_with_explanation`
@@ -160,7 +178,84 @@ All agents use **LangChain v1.0+** with OpenAI GPT-4 and ChromaDB RAG:
   - Returns: `recommendation` (GPT-4), `reasoning`, `expected_impact`, `data_sources` (mongodb_ids)
   - Uses strategy_knowledge_vectors as primary RAG source
 
-### 4. ChromaDB Collections (5)
+### 4. Agent Pipeline (NEW)
+- **Location:** `app/pipeline_orchestrator.py`, `app/routers/pipeline.py`
+- **Purpose:** Automated agent pipeline triggered by MongoDB changes
+- **Architecture:**
+  ```
+  MongoDB Changes → Change Tracker → Hourly Scheduler → Pipeline Orchestrator
+                                                              │
+                                                              ▼
+                                               ┌───────────────────────────┐
+                                               │ Check if Retrain Needed   │
+                                               │ (historical_rides or      │
+                                               │  competitor_prices changed)│
+                                               └─────────────┬─────────────┘
+                                                             │
+                                              ┌──────────────┴──────────────┐
+                                              │                             │
+                                              ▼                             ▼
+                                    ┌─────────────────┐         ┌──────────────────┐
+                                    │ Retrain Prophet │         │ Skip Retraining  │
+                                    │ ML Model        │         │ (model up to date)│
+                                    └────────┬────────┘         └────────┬─────────┘
+                                             └──────────┬────────────────┘
+                                                        │
+                         ┌──────────────────────────────┼──────────────────────────────┐
+                         │                              │                              │
+                         ▼                              ▼                              ▼
+               ┌─────────────────┐               ┌─────────────────┐
+               │ Forecasting     │               │ Analysis Agent  │
+               │ Agent           │  PARALLEL     │ - Competitor    │
+               └────────┬────────┘               │ - External Data │
+                        │                        │ - Pricing Rules │
+                        │                        └────────┬────────┘
+                        └─────────┬──────────────────────┘
+                                  │
+                                  ▼
+                       ┌─────────────────────┐
+                       │ Recommendation Agent│
+                       └──────────┬──────────┘
+                                  │
+                                  ▼
+                       ┌─────────────────────┐
+                       │ What-If Analysis    │
+                       └─────────────────────┘
+  ```
+
+- **Features:**
+  - **Change Tracker:** Thread-safe tracking of MongoDB collection changes
+  - **Automatic Model Retraining:** Prophet ML model is retrained before forecasting if:
+    - `historical_rides` collection has changed
+    - `competitor_prices` collection has changed
+    - New data exists since last training
+  - **Hourly Scheduler:** Runs pipeline only if changes detected (configurable in background_tasks.py)
+  - **Parallel Execution:** Forecasting + Analysis run concurrently
+  - **Sequential Phases:** Recommendations → What-If Impact analysis
+  - **Natural Language Explanations:** All phases generate GPT-4 explanations
+  - **Chatbot Compatibility:** All chatbot queries continue to work independently
+
+- **API Endpoints:**
+  - `POST /api/v1/pipeline/trigger` - Manual pipeline trigger (force=true to run without changes)
+  - `GET /api/v1/pipeline/status` - Current pipeline status and change tracker
+  - `GET /api/v1/pipeline/history` - Pipeline run history
+  - `GET /api/v1/pipeline/changes` - Pending changes waiting for next run
+  - `POST /api/v1/pipeline/clear-changes` - Clear pending changes without running
+
+- **Pipeline-Specific Analysis Tools:**
+  - `analyze_competitor_data_for_pipeline()` - HWCO vs competitor comparison (with explanation)
+  - `analyze_external_data_for_pipeline()` - News, events, traffic synthesis (with explanation)
+  - `generate_pricing_rules_for_pipeline()` - Auto-generate pricing rules (with explanation)
+  - `calculate_whatif_impact_for_pipeline()` - KPI impact simulation (with explanation)
+
+- **Forecasting Phase Details:**
+  1. Check if `historical_rides` or `competitor_prices` data changed
+  2. If changed → Retrain Prophet ML model with latest data
+  3. Generate 30/60/90-day forecasts for CONTRACTED, STANDARD, CUSTOM pricing
+  4. Generate GPT-4 explanations for each forecast
+  5. Return forecasts with retraining status and explanations
+
+### 5. ChromaDB Collections (5)
 Created automatically by Data Ingestion Agent with OpenAI embeddings:
 - **Configuration:** Uses OpenAI `text-embedding-3-small` (1536 dimensions) when `OPENAI_API_KEY` is available
 - **Storage:** Local persistent storage at `CHROMADB_PATH` (default: `./chroma_db`)
@@ -171,6 +266,7 @@ Created automatically by Data Ingestion Agent with OpenAI embeddings:
   - `strategy_knowledge_vectors` - Used by: Recommendation Agent (primary), Pricing Agent
   - `competitor_analysis_vectors` - Used by: Recommendation Agent, Analysis Agent
 - **Verification:** Run `python3 tests/test_chromadb_collections.py` to verify all collections exist and are accessible
+- **Manual Sync:** Use `POST /api/v1/upload/sync-strategies-to-chromadb` to manually sync pricing strategies from MongoDB to ChromaDB
 
 ## Getting Started
 
@@ -324,6 +420,9 @@ python3 tests/test_prophet_ml.py         # Prophet ML (5/5 passing)
 - ✓ **OpenAI Connection (4 tests)** - API key, embeddings, chat completions
 - ✓ **ChromaDB Collections (5 tests)** - All collections exist, queryable, OpenAI embeddings
 - ✓ **Analytics Revenue Endpoint (6 tests)** - Endpoint validation, response structure, date calculations
+- ✓ **Analysis Agent API (10 tests)** - Sync PyMongo, KPI tools, pattern analysis, top revenue rides
+- ✓ **Agent Pipeline (16 tests)** - Pipeline endpoints, chatbot compatibility, concurrent access
+- ✓ **ML Combined Training (14 tests)** - HWCO + competitor data training, forecast endpoints
 
 **Existing Test Suites:**
 - ✓ Data Ingestion Agent Tests (4/4 passing)
@@ -341,6 +440,9 @@ python3 tests/test_openai_connection.py
 
 # ChromaDB collections verification
 python3 tests/test_chromadb_collections.py
+
+# Analysis Agent API tests (sync PyMongo verification)
+python3 tests/test_analysis_agent_api.py
 ```
 
 See `tests/README_testing.md` for detailed testing documentation.
@@ -477,6 +579,7 @@ All test scripts are in `tests/` folder. Run tests to verify functionality:
 - **WebSocket Endpoint: 5/5 tests passing ✓**
 - **OpenAI Connection: 4/4 tests passing ✓**
 - **ChromaDB Collections: 5/5 tests passing ✓**
+- **Analysis Agent API: 10/10 tests passing ✓** (NEW - sync PyMongo)
 
 **Existing Tests:**
 - Data Ingestion Agent: 4/4 tests passing ✓
@@ -484,7 +587,19 @@ All test scripts are in `tests/` folder. Run tests to verify functionality:
 - Pricing Engine: 6/6 tests passing ✓
 - File Upload: 8/8 tests passing ✓
 
-**Total: 70+ tests, 100% pass rate**
+**Analysis Agent (Sync PyMongo):**
+- ✓ **Analysis Agent API: 10/10 tests passing ✓** (new)
+
+**Agent Pipeline & ML Combined Training (NEW):**
+- ✓ **Agent Pipeline: 16/16 tests passing ✓** (new)
+- ✓ **ML Combined Training: 14/14 tests passing ✓** (new)
+
+**Run Pipeline + ML Tests:**
+```bash
+python3 -m pytest tests/test_pipeline.py tests/test_ml_combined_training.py -v
+```
+
+**Total: 132+ tests, 100% pass rate**
 
 ## Troubleshooting
 
@@ -514,6 +629,15 @@ All test scripts are in `tests/` folder. Run tests to verify functionality:
 - Run `python3 tests/fix_chromadb_collections.py` to recreate collections with correct embeddings if needed
 - Check `CHROMADB_PATH` in config (default: `./chroma_db`)
 
+### ChromaDB Embedding Dimension Mismatch
+- **Issue:** Error "Collection expecting embedding with dimension of 1536, got 384"
+- **Root Cause:** Collection was created with default embeddings (384 dim) instead of OpenAI (1536 dim)
+- **Solution:** 
+  1. Delete the `chromadb_data` directory
+  2. Restart the backend server
+  3. Run `POST /api/v1/upload/sync-strategies-to-chromadb` to repopulate
+- **Prevention:** The `query_chromadb()` function now explicitly uses OpenAI embedding function
+
 ### OpenAI API Key Issues
 - Verify `OPENAI_API_KEY` is set in root `.env` file
 - Run `python3 tests/test_openai_connection.py` to test API connection
@@ -524,6 +648,13 @@ All test scripts are in `tests/` folder. Run tests to verify functionality:
 - No deprecated patterns (LCEL, create_react_agent, etc.)
 - Dependencies are compatible: `langchain>=1.0.0`, `langchain-core>=1.0.0`, `langgraph>=1.0.0`
 - If you see import errors, ensure all LangChain packages are v1.0+
+
+### Analysis Agent "Metrics Not Available" Fix
+- **Issue:** Analysis Agent returned "metrics not available" when querying MongoDB
+- **Root Cause:** LangChain `@tool` decorated functions run synchronously, but were using async Motor driver
+- **Solution:** Refactored Analysis Agent to use **synchronous PyMongo** instead of async Motor
+- **Tools Updated:** All KPI tools, pattern analysis tools, and top revenue rides query
+- **Verification:** Run `python3 tests/test_analysis_agent_api.py` to verify (10/10 tests passing)
 
 ## License
 

@@ -1,0 +1,29 @@
+## 🎯 BUSINESS OBJECTIVES
+
+### Primary Goals
+
+## 🎯 Business Rules
+
+The Data Ingestion Agent needs to run to:
+1. Create MongoDB collection called pricing_strategies or use existing if it already exists. This collection should be able to accommodate multiple strategy types such as business-objectives, dynamic-pricing-rules, surge-rules, competitive-rules, customer-retention-rules, event-driven-pricing-rules etc.
+2. Create API end point to allow manual upload of pricing_strategies collection for 1 or more data types
+3. Add and implement below routing in data_ingestion.py 
+
+   routing_map = {
+       ...
+       "pricing_strategies": "strategy_knowledge_vectors",
+       "business_rules": "strategy_knowledge_vectors"
+   }
+
+4. Populate the pricing_strategies with below below list under a strategy type of business-objectives
+
+a. **Maximize Revenue:** Increase 15-25% through intelligent pricing
+b. **Maximize Profit Margins:** Optimize without losing customers
+c. **Stay Competitive:** Real-time competitor analysis
+d. **Customer Retention:** Reduce churn 10-15%
+e. **Data-Driven Decisions:** AI-powered insights
+
+5. Add and implement capability for Data Ingestion Agent to Read documents from MongoDB pricing_strategies collection
+2. Generate text descriptions
+3. Create OpenAI embeddings
+4. Store in ChromaDB strategy_knowledge_vectors

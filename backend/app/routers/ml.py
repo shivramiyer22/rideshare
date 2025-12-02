@@ -60,15 +60,42 @@ async def train_prophet_models() -> Dict[str, Any]:
                 detail="Database connection not available"
             )
         
-        # Read historical data from MongoDB
-        collection = database["historical_rides"]
-        cursor = collection.find({})
-        records = await cursor.to_list(length=None)
+        # ================================================================
+        # Load BOTH HWCO historical data AND competitor data for training
+        # This improves forecast accuracy by learning market-wide patterns
+        # ================================================================
         
-        if len(records) < 300:
+        # Load HWCO historical data
+        hwco_collection = database["historical_rides"]
+        hwco_cursor = hwco_collection.find({})
+        hwco_records = await hwco_cursor.to_list(length=None)
+        hwco_count = len(hwco_records)
+        logger.info(f"Loaded {hwco_count} HWCO historical records")
+        
+        # Add source identifier to HWCO records
+        for record in hwco_records:
+            record["Rideshare_Company"] = "HWCO"
+        
+        # Load competitor data
+        competitor_collection = database["competitor_prices"]
+        competitor_cursor = competitor_collection.find({})
+        competitor_records = await competitor_cursor.to_list(length=None)
+        competitor_count = len(competitor_records)
+        logger.info(f"Loaded {competitor_count} competitor records")
+        
+        # Add source identifier to competitor records
+        for record in competitor_records:
+            record["Rideshare_Company"] = "COMPETITOR"
+        
+        # Combine both datasets
+        records = hwco_records + competitor_records
+        total_count = len(records)
+        logger.info(f"Combined training data: {total_count} records (HWCO: {hwco_count}, Competitor: {competitor_count})")
+        
+        if total_count < 300:
             raise HTTPException(
                 status_code=400,
-                detail=f"Insufficient data: {len(records)} rows. Minimum 300 total rows required (across all pricing types)."
+                detail=f"Insufficient combined data: {total_count} rows. Minimum 300 total rows required (HWCO: {hwco_count}, Competitor: {competitor_count})."
             )
         
         # Convert to DataFrame
@@ -107,14 +134,11 @@ async def train_prophet_models() -> Dict[str, Any]:
                 "CUSTOM": pricing_model_counts.get("CUSTOM", 0)
             }
         
-        # Train the model (single model for all pricing types)
-        # Run in thread pool to avoid blocking
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            forecast_model.train,
-            df
-        )
+        # Train the model synchronously
+        # Training takes ~15-30 seconds for 2000 rows, which is acceptable
+        # Using run_in_executor caused CancelledError issues
+        logger.info("Starting model training (synchronous)...")
+        result = forecast_model.train(df)
         
         if not result.get("success", False):
             raise HTTPException(
@@ -122,37 +146,50 @@ async def train_prophet_models() -> Dict[str, Any]:
                 detail=result.get("error", "Training failed")
             )
         
+        logger.info("Training successful, preparing response...")
+        
         # Update training metadata in MongoDB
         try:
-            metadata_collection = database.get_collection("ml_training_metadata")
+            metadata_collection = database["ml_training_metadata"]
             await metadata_collection.update_one(
                 {"type": "last_training"},
                 {
                     "$set": {
                         "timestamp": datetime.utcnow(),
                         "training_rows": result.get("training_rows", 0),
-                        "mape": result.get("mape", 0.0)
+                        "hwco_rows": hwco_count,
+                        "competitor_rows": competitor_count,
+                        "mape": result.get("mape", 0.0),
+                        "data_sources": ["historical_rides", "competitor_prices"]
                     }
                 },
                 upsert=True
             )
+            logger.info("MongoDB metadata updated successfully")
         except Exception as e:
             logger.warning(f"Failed to update training metadata: {e}")
         
-        # Build response with pricing_model breakdown if available
+        # Build response with data source breakdown
         response = {
             "success": True,
             "mape": result.get("mape", 0.0),
             "confidence": result.get("confidence", 0.80),
             "model_path": result.get("model_path", ""),
             "training_rows": result.get("training_rows", 0),
-            "message": f"Model trained successfully on {result.get('training_rows', 0)} rows"
+            "data_sources": {
+                "hwco_rows": hwco_count,
+                "competitor_rows": competitor_count,
+                "total_rows": total_count,
+                "collections": ["historical_rides", "competitor_prices"]
+            },
+            "message": f"Model trained successfully on {result.get('training_rows', 0)} combined rows (HWCO: {hwco_count}, Competitor: {competitor_count})"
         }
         
         # Add pricing_model breakdown if we have the data
         if pricing_model_breakdown:
             response["pricing_model_breakdown"] = pricing_model_breakdown
         
+        logger.info(f"Returning training response: success={response.get('success')}, rows={response.get('training_rows')}")
         return response
         
     except HTTPException:
@@ -336,6 +373,7 @@ async def _generate_forecast(pricing_model: str, periods: int) -> Dict[str, Any]
             "model": "prophet_ml",
             "pricing_model": pricing_model,
             "periods": periods,
+            "days": periods,  # Alias for periods
             "confidence": 0.80,
             "accuracy": "Training metrics available from /api/ml/train endpoint"
         }
