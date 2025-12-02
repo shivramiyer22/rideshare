@@ -1,0 +1,15 @@
+[Unit]
+Description=Rideshare Dynamic Pricing Backend
+After=network.target mongodb.service redis-server.service
+
+[Service]
+Type=simple
+User=rideshare
+WorkingDirectory=/opt/rideshare/backend
+Environment="PATH=/opt/rideshare/backend/venv/bin"
+ExecStart=/opt/rideshare/backend/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

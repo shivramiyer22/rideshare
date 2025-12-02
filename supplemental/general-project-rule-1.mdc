@@ -1,0 +1,16 @@
+---
+alwaysApply: true
+---
+Always create and maintain a README.md file for the backend application in backend folder, frontend application in frontend folder and for the entire project in the project root folder. Ensure each README.md file has clear instructions for its applicable module scope (frontend or backend or entire application), on how to setup the environment, install dependencies and run the application locally.
+
+Whenever a change is committed to the branch, review all README files and update as required for the latest comitted version and then commit the README files specifically.
+
+When executing a steps within a tasks list file, do the following:
+1. always consider all applicable cursor rules, agent context data. 
+2. Then for each step execute, build or implement the step.
+3. Then generate comprehensive test cases, any required test scripts and test config and test data files in the "tests" folder applicable to the step's frontend or backend modules. For e.g. backend/tests or frontend/tests etc.
+4. Then capture these test cases, test scripts in appropriate testing readme file for the applicable application module if one exists else create a new README_TESTING.md file. And capture what functionalities or test cases are tested by each of these test scripts or test code files.
+5. Then execute the full set of comprehensive testing, capture failures if any and iterate on them to fix them and retest until the testing of the task achieves a 100% pass rate. 
+6. Capture the testing results for each task in an existing or new TEST_RESULTS.md file that applies to the task's frontend or backend module as applicable. Do not create task specific test results documents separately.
+7. Finally summarize what was done in the step and update or create any existing README.md file. 
+8. Now explain what you will do in next step and ask for explicit permission before executing next step.

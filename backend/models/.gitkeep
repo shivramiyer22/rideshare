@@ -1,0 +1,8 @@
+# This directory stores Prophet ML saved models
+# Models will be saved as:
+# - contracted_forecast.pkl
+# - standard_forecast.pkl
+# - custom_forecast.pkl
+
+
+
