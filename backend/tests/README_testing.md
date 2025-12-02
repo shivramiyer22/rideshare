@@ -127,8 +127,139 @@ python3 tests/test_all_latest_updates.py
 - ✅ Data Ingestion: ChromaDB embedding creation
 
 ### Total Test Results
-- **Total Test Suites:** 8+
-- **Total Tests:** 50+
+- **Total Test Suites:** 10+
+- **Total Tests:** 85+
 - **Pass Rate:** ✅ 100%
 
 All tests handle missing dependencies gracefully (Redis, OpenAI API key) which is expected in test environments.
+
+---
+
+## Comprehensive Endpoint Tests
+
+### test_all_endpoints.py
+Comprehensive test suite for all API endpoints (35 tests total).
+
+**Test Coverage:**
+
+#### Analytics Endpoints (5 tests)
+- ✅ `GET /analytics/dashboard` - Returns full dashboard with KPIs
+- ✅ `GET /analytics/dashboard` with date parameters
+- ✅ `GET /analytics/metrics` - Returns key business metrics
+- ✅ `GET /analytics/revenue` - Returns revenue analytics
+- ✅ `GET /analytics/revenue` with different periods (7d, 30d, 60d, 90d)
+
+#### Users CRUD Endpoints (8 tests)
+- ✅ `POST /users/` - Creates new user with USR-XXXXXXXX ID
+- ✅ `GET /users/` - Lists all users
+- ✅ `GET /users/` with loyalty_tier filter
+- ✅ `GET /users/{user_id}` - Gets user by ID
+- ✅ `GET /users/{user_id}` - Returns 404 for non-existent user
+- ✅ `PUT /users/{user_id}` - Updates user
+- ✅ `DELETE /users/{user_id}` - Soft deletes user
+- ✅ `POST /users/` - Rejects duplicate email
+
+#### Orders CRUD Endpoints (7 tests)
+- ✅ `POST /orders/` - Creates order with ORD-XXXXXXXX ID
+- ✅ `POST /orders/` with CONTRACTED pricing (auto P0 priority)
+- ✅ `POST /orders/` with CUSTOM pricing (auto P2 priority)
+- ✅ `GET /orders/` - Lists all orders
+- ✅ `GET /orders/{order_id}` - Gets order by ID
+- ✅ `GET /orders/{order_id}` - Returns 404 for non-existent order
+- ✅ `GET /orders/queue/priority` - Returns priority queue status
+
+#### Chatbot Endpoints (5 tests)
+- ✅ `POST /chatbot/chat` - Sends and receives messages
+- ✅ `POST /chatbot/chat` with thread_id for conversation continuity
+- ✅ `GET /chatbot/history` - Returns chat history for user
+- ✅ `GET /chatbot/history` with thread_id filter
+- ✅ `GET /chatbot/history` - Requires user_id parameter
+
+#### ML Training & Forecasting Endpoints (5 tests)
+- ✅ `POST /ml/train` - Trains Prophet model
+- ✅ `GET /ml/forecast/30d` - 30-day forecast
+- ✅ `GET /ml/forecast/60d` - 60-day forecast
+- ✅ `GET /ml/forecast/90d` - 90-day forecast
+- ✅ Invalid pricing_model returns 400/422
+
+#### Upload Endpoints (2 tests)
+- ✅ `POST /upload/historical-data` - Requires file
+- ✅ `POST /upload/competitor-data` - Requires file
+
+#### Health Check (3 tests)
+- ✅ `GET /` - Root endpoint
+- ✅ `GET /docs` - OpenAPI documentation
+- ✅ `GET /openapi.json` - OpenAPI schema
+
+**Run Tests:**
+```bash
+cd backend
+python3 -m pytest tests/test_all_endpoints.py -v
+```
+
+**Test Results:** ✅ 35/35 tests passed (100% pass rate)
+
+**Last Run:** December 2, 2025
+
+---
+
+## Analysis Agent Tests
+
+### test_analysis_agent_api.py
+Tests the refactored Analysis Agent via HTTP API endpoints (avoids numpy import issues on macOS).
+
+**Test Coverage (10 tests):**
+- ✅ Chatbot top revenue rides query (routes to Analysis Agent)
+- ✅ Chatbot revenue KPIs query
+- ✅ Chatbot customer segments query
+- ✅ Chatbot location performance query
+- ✅ Chatbot time patterns query
+- ✅ Analytics dashboard endpoint
+- ✅ Analytics metrics endpoint
+- ✅ Analytics revenue endpoint
+- ✅ Chatbot routing to Analysis Agent verification
+- ✅ Sync PyMongo integration (no async errors)
+
+**Key Verification:**
+- Analysis Agent uses **synchronous PyMongo** (not async Motor)
+- No "metrics not available" errors
+- No asyncio/event loop errors
+- Proper routing from Orchestrator to Analysis Agent
+
+**Run Tests:**
+```bash
+cd backend
+python3 tests/test_analysis_agent_api.py
+```
+
+**Prerequisites:**
+- Backend server running on localhost:8000
+- MongoDB connection configured
+- OpenAI API key for chatbot agent
+
+**Test Results:** ✅ 10/10 tests passed (100% pass rate)
+
+**Last Run:** December 2, 2025
+
+---
+
+## Total Test Summary
+
+### All Test Suites
+| Test Suite | Tests | Pass Rate |
+|------------|-------|-----------|
+| ML Router Simple | 5 | ✅ 100% |
+| ML Endpoints Enhanced | 5 | ✅ 100% |
+| Agent Utilities | 7 | ✅ 100% |
+| Agents Enhanced | 7 | ✅ 100% |
+| Priority Queue Endpoint | 3 | ✅ 100% |
+| All Endpoints (Comprehensive) | 35 | ✅ 100% |
+| **Analysis Agent API** | **10** | ✅ **100%** |
+| Pricing Agent Enhanced | 5 | ✅ 100% |
+| Forecasting Agent Enhanced | 5 | ✅ 100% |
+| Recommendation Agent Enhanced | 6 | ✅ 100% |
+| WebSocket Endpoint | 5 | ✅ 100% |
+| OpenAI Connection | 4 | ✅ 100% |
+| ChromaDB Collections | 5 | ✅ 100% |
+
+**Grand Total:** 102+ tests, 100% pass rate

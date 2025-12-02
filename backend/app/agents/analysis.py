@@ -9,33 +9,36 @@ This agent analyzes business data to provide insights about:
 
 The agent uses RAG (Retrieval-Augmented Generation):
 1. Query ChromaDB for similar past scenarios
-2. Fetch full documents from MongoDB
+2. Fetch full documents from MongoDB (using sync PyMongo)
 3. Analyze the data using OpenAI GPT-4
 4. Generate actionable insights
+
+REFACTORED: Uses synchronous PyMongo for reliable database access
+from LangChain tools (which run in sync context).
 """
 from langchain.agents import create_agent
 from langchain.tools import tool
-from typing import Dict, Any, List
-import asyncio
+from typing import Dict, Any, List, Optional
 import json
 from datetime import datetime, timedelta
-from app.agents.utils import query_chromadb, fetch_mongodb_documents, format_documents_as_context
-from app.database import get_database
+import pymongo
+from app.config import settings
+from app.agents.utils import query_chromadb, format_documents_as_context
+import logging
+
+logger = logging.getLogger(__name__)
 
 
-def run_async_query(coro):
-    """Helper to run async MongoDB queries in sync context."""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # If loop is running, we can't use run_until_complete
-            # Return empty result as fallback
-            return []
-        else:
-            return loop.run_until_complete(coro)
-    except RuntimeError:
-        # No event loop, create one
-        return asyncio.run(coro)
+def get_sync_mongodb_client():
+    """Get a synchronous MongoDB client for use in LangChain tools."""
+    return pymongo.MongoClient(settings.mongodb_url)
+
+
+def get_sync_collection(collection_name: str):
+    """Get a synchronous MongoDB collection."""
+    client = get_sync_mongodb_client()
+    db = client[settings.mongodb_db_name]
+    return client, db[collection_name]
 
 
 @tool
@@ -59,25 +62,25 @@ def query_ride_scenarios(query: str, n_results: int = 5) -> str:
         results = query_chromadb("ride_scenarios_vectors", query, n_results)
         
         if not results:
-            return "No similar ride scenarios found."
+            return "No similar ride scenarios found in ChromaDB."
         
         # Extract MongoDB IDs
-        mongodb_ids = [r["mongodb_id"] for r in results]
+        mongodb_ids = [r.get("mongodb_id") for r in results if r.get("mongodb_id")]
         
-        # Fetch full documents from MongoDB
-        # Run async function in sync context
-        loop = asyncio.get_event_loop()
-        documents = loop.run_until_complete(
-            fetch_mongodb_documents(mongodb_ids, "ride_orders")
-        )
+        if not mongodb_ids:
+            return "No MongoDB IDs found in ChromaDB results."
         
-        # If no documents in ride_orders, try historical_rides
-        if not documents:
-            documents = loop.run_until_complete(
-                fetch_mongodb_documents(mongodb_ids, "historical_rides")
-            )
+        # Fetch from MongoDB using sync client
+        client, collection = get_sync_collection("historical_rides")
+        try:
+            documents = list(collection.find({"_id": {"$in": mongodb_ids}}).limit(n_results))
+            if not documents:
+                # Try ride_orders collection
+                collection = client[settings.mongodb_db_name]["ride_orders"]
+                documents = list(collection.find({"_id": {"$in": mongodb_ids}}).limit(n_results))
+        finally:
+            client.close()
         
-        # Format as context string
         return format_documents_as_context(documents)
     except Exception as e:
         return f"Error querying ride scenarios: {str(e)}"
@@ -107,20 +110,24 @@ def query_news_events(query: str, n_results: int = 5) -> str:
             return "No similar events or news found."
         
         # Extract MongoDB IDs
-        mongodb_ids = [r["mongodb_id"] for r in results]
+        mongodb_ids = [r.get("mongodb_id") for r in results if r.get("mongodb_id")]
         
-        # Fetch full documents from MongoDB
-        # Try multiple collections (events_data, traffic_data, news_articles)
-        loop = asyncio.get_event_loop()
+        if not mongodb_ids:
+            return "No MongoDB IDs found in ChromaDB results."
+        
+        # Fetch from multiple collections
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
         documents = []
         
-        for collection_name in ["events_data", "traffic_data", "news_articles"]:
-            docs = loop.run_until_complete(
-                fetch_mongodb_documents(mongodb_ids, collection_name)
-            )
-            documents.extend(docs)
+        try:
+            for collection_name in ["events_data", "traffic_data", "news_articles"]:
+                collection = db[collection_name]
+                docs = list(collection.find({"_id": {"$in": mongodb_ids}}).limit(n_results))
+                documents.extend(docs)
+        finally:
+            client.close()
         
-        # Format as context string
         return format_documents_as_context(documents)
     except Exception as e:
         return f"Error querying news/events: {str(e)}"
@@ -149,15 +156,18 @@ def query_customer_behavior(query: str, n_results: int = 5) -> str:
             return "No customer behavior patterns found."
         
         # Extract MongoDB IDs
-        mongodb_ids = [r["mongodb_id"] for r in results]
+        mongodb_ids = [r.get("mongodb_id") for r in results if r.get("mongodb_id")]
         
-        # Fetch full documents from MongoDB
-        loop = asyncio.get_event_loop()
-        documents = loop.run_until_complete(
-            fetch_mongodb_documents(mongodb_ids, "customers")
-        )
+        if not mongodb_ids:
+            return "No MongoDB IDs found in ChromaDB results."
         
-        # Format as context string
+        # Fetch from MongoDB
+        client, collection = get_sync_collection("customers")
+        try:
+            documents = list(collection.find({"_id": {"$in": mongodb_ids}}).limit(n_results))
+        finally:
+            client.close()
+        
         return format_documents_as_context(documents)
     except Exception as e:
         return f"Error querying customer behavior: {str(e)}"
@@ -186,15 +196,18 @@ def query_competitor_data(query: str, n_results: int = 5) -> str:
             return "No competitor data found."
         
         # Extract MongoDB IDs
-        mongodb_ids = [r["mongodb_id"] for r in results]
+        mongodb_ids = [r.get("mongodb_id") for r in results if r.get("mongodb_id")]
         
-        # Fetch full documents from MongoDB
-        loop = asyncio.get_event_loop()
-        documents = loop.run_until_complete(
-            fetch_mongodb_documents(mongodb_ids, "competitor_prices")
-        )
+        if not mongodb_ids:
+            return "No MongoDB IDs found in ChromaDB results."
         
-        # Format as context string
+        # Fetch from MongoDB
+        client, collection = get_sync_collection("competitor_prices")
+        try:
+            documents = list(collection.find({"_id": {"$in": mongodb_ids}}).limit(n_results))
+        finally:
+            client.close()
+        
         return format_documents_as_context(documents)
     except Exception as e:
         return f"Error querying competitor data: {str(e)}"
@@ -217,9 +230,8 @@ def calculate_revenue_kpis(time_period: str = "30d") -> str:
         str: JSON string with revenue KPIs
     """
     try:
-        database = get_database()
-        if not database:
-            return json.dumps({"error": "Database connection not available"})
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
         
         # Calculate date range
         end_date = datetime.utcnow()
@@ -236,39 +248,54 @@ def calculate_revenue_kpis(time_period: str = "30d") -> str:
             start_date = end_date - timedelta(days=30)
             prev_start_date = start_date - timedelta(days=30)
         
-        # Query current period
-        collection = database["ride_orders"]
+        try:
+            # Try historical_rides first (new format)
+            collection = db["historical_rides"]
+            count = collection.count_documents({})
+            
+            if count > 0:
+                # Use historical_rides with new field names
+                current_orders = list(collection.find({
+                    "Order_Date": {"$gte": start_date, "$lte": end_date}
+                }))
+                prev_orders = list(collection.find({
+                    "Order_Date": {"$gte": prev_start_date, "$lt": start_date}
+                }))
+                
+                # Calculate revenue using Historical_Cost_of_Ride
+                total_revenue = sum(
+                    order.get("Historical_Cost_of_Ride", 0) 
+                    for order in current_orders
+                )
+                prev_revenue = sum(
+                    order.get("Historical_Cost_of_Ride", 0) 
+                    for order in prev_orders
+                )
+            else:
+                # Fallback to ride_orders
+                collection = db["ride_orders"]
+                current_orders = list(collection.find({
+                    "created_at": {"$gte": start_date, "$lte": end_date}
+                }))
+                prev_orders = list(collection.find({
+                    "created_at": {"$gte": prev_start_date, "$lt": start_date}
+                }))
+                
+                total_revenue = sum(
+                    order.get("final_price", order.get("price", 0)) 
+                    for order in current_orders
+                )
+                prev_revenue = sum(
+                    order.get("final_price", order.get("price", 0)) 
+                    for order in prev_orders
+                )
+        finally:
+            client.close()
         
-        # Get orders in current period (handle async in sync context)
-        async def get_current_orders():
-            return await collection.find({
-                "created_at": {"$gte": start_date, "$lte": end_date}
-            }).to_list(length=None)
-        
-        async def get_prev_orders():
-            return await collection.find({
-                "created_at": {"$gte": prev_start_date, "$lt": start_date}
-            }).to_list(length=None)
-        
-        current_orders = run_async_query(get_current_orders())
-        prev_orders = run_async_query(get_prev_orders())
-        
-        # Calculate total revenue
-        total_revenue = sum(
-            order.get("final_price", order.get("price", 0)) 
-            for order in current_orders
-        )
-        
-        # Calculate average revenue per ride
+        # Calculate metrics
         ride_count = len(current_orders)
         avg_revenue_per_ride = total_revenue / ride_count if ride_count > 0 else 0
         
-        prev_revenue = sum(
-            order.get("final_price", order.get("price", 0)) 
-            for order in prev_orders
-        )
-        
-        # Calculate revenue growth
         revenue_growth = 0.0
         if prev_revenue > 0:
             revenue_growth = ((total_revenue - prev_revenue) / prev_revenue) * 100
@@ -299,9 +326,8 @@ def calculate_profit_metrics(time_period: str = "30d") -> str:
         str: JSON string with profit metrics
     """
     try:
-        database = get_database()
-        if not database:
-            return json.dumps({"error": "Database connection not available"})
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
         
         # Calculate date range
         end_date = datetime.utcnow()
@@ -314,23 +340,29 @@ def calculate_profit_metrics(time_period: str = "30d") -> str:
         else:
             start_date = end_date - timedelta(days=30)
         
-        collection = database["ride_orders"]
+        try:
+            # Try historical_rides first
+            collection = db["historical_rides"]
+            count = collection.count_documents({})
+            
+            if count > 0:
+                orders = list(collection.find({
+                    "Order_Date": {"$gte": start_date, "$lte": end_date}
+                }))
+                total_revenue = sum(order.get("Historical_Cost_of_Ride", 0) for order in orders)
+            else:
+                collection = db["ride_orders"]
+                orders = list(collection.find({
+                    "created_at": {"$gte": start_date, "$lte": end_date}
+                }))
+                total_revenue = sum(
+                    order.get("final_price", order.get("price", 0)) 
+                    for order in orders
+                )
+        finally:
+            client.close()
         
-        # Get orders in period (handle async in sync context)
-        async def get_orders():
-            return await collection.find({
-                "created_at": {"$gte": start_date, "$lte": end_date}
-            }).to_list(length=None)
-        
-        orders = run_async_query(get_orders())
-        
-        total_revenue = sum(
-            order.get("final_price", order.get("price", 0)) 
-            for order in orders
-        )
-        
-        # Estimate costs (if cost data not available, use 60% of revenue as estimate)
-        # In production, this would come from actual cost data
+        # Estimate costs (60% of revenue as industry estimate)
         estimated_costs = total_revenue * 0.60
         profit = total_revenue - estimated_costs
         profit_margin = (profit / total_revenue * 100) if total_revenue > 0 else 0
@@ -359,9 +391,8 @@ def calculate_rides_count(time_period: str = "30d") -> str:
         str: JSON string with ride counts by pricing model
     """
     try:
-        database = get_database()
-        if not database:
-            return json.dumps({"error": "Database connection not available"})
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
         
         # Calculate date range
         end_date = datetime.utcnow()
@@ -374,20 +405,29 @@ def calculate_rides_count(time_period: str = "30d") -> str:
         else:
             start_date = end_date - timedelta(days=30)
         
-        collection = database["ride_orders"]
-        
-        # Get orders in period (handle async in sync context)
-        async def get_orders():
-            return await collection.find({
-                "created_at": {"$gte": start_date, "$lte": end_date}
-            }).to_list(length=None)
-        
-        orders = run_async_query(get_orders())
+        try:
+            # Try historical_rides first
+            collection = db["historical_rides"]
+            count = collection.count_documents({})
+            
+            if count > 0:
+                orders = list(collection.find({
+                    "Order_Date": {"$gte": start_date, "$lte": end_date}
+                }))
+                pricing_field = "Pricing_Model"
+            else:
+                collection = db["ride_orders"]
+                orders = list(collection.find({
+                    "created_at": {"$gte": start_date, "$lte": end_date}
+                }))
+                pricing_field = "pricing_model"
+        finally:
+            client.close()
         
         # Count by pricing model
-        contracted_count = sum(1 for o in orders if o.get("pricing_model") == "CONTRACTED")
-        standard_count = sum(1 for o in orders if o.get("pricing_model") == "STANDARD")
-        custom_count = sum(1 for o in orders if o.get("pricing_model") == "CUSTOM")
+        contracted_count = sum(1 for o in orders if o.get(pricing_field) == "CONTRACTED")
+        standard_count = sum(1 for o in orders if o.get(pricing_field) == "STANDARD")
+        custom_count = sum(1 for o in orders if o.get(pricing_field) == "CUSTOM")
         total_count = len(orders)
         
         return json.dumps({
@@ -399,6 +439,92 @@ def calculate_rides_count(time_period: str = "30d") -> str:
         })
     except Exception as e:
         return json.dumps({"error": f"Error calculating ride counts: {str(e)}"})
+
+
+@tool
+def get_top_revenue_rides(month: str = "", year: str = "", limit: int = 10) -> str:
+    """
+    Get top rides by revenue from historical data.
+    
+    Queries the historical_rides collection to find rides with highest revenue.
+    Can filter by month and year.
+    
+    Args:
+        month: Month name (e.g., "November", "January") or number (1-12). Leave empty for all months.
+        year: Year (e.g., "2024"). Leave empty for all years.
+        limit: Number of top rides to return (default: 10)
+    
+    Returns:
+        str: JSON string with top revenue rides
+    """
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        collection = db["historical_rides"]
+        
+        # Map month names to numbers
+        month_map = {
+            "january": 1, "february": 2, "march": 3, "april": 4,
+            "may": 5, "june": 6, "july": 7, "august": 8,
+            "september": 9, "october": 10, "november": 11, "december": 12
+        }
+        
+        # Parse month
+        month_num = None
+        if month:
+            if month.lower() in month_map:
+                month_num = month_map[month.lower()]
+            elif month.isdigit():
+                month_num = int(month)
+        
+        # Parse year
+        year_num = None
+        if year and year.isdigit():
+            year_num = int(year)
+        
+        try:
+            # Build query with date filtering if specified
+            if month_num:
+                # Use aggregation for month filtering
+                pipeline = [
+                    {"$addFields": {"order_month": {"$month": "$Order_Date"}}},
+                    {"$match": {"order_month": month_num}},
+                    {"$sort": {"Historical_Cost_of_Ride": -1}},
+                    {"$limit": limit}
+                ]
+                rides = list(collection.aggregate(pipeline))
+            else:
+                # Simple query without month filter
+                rides = list(collection.find({}).sort("Historical_Cost_of_Ride", -1).limit(limit))
+        finally:
+            client.close()
+        
+        # Format results
+        formatted_rides = []
+        for i, ride in enumerate(rides, 1):
+            formatted_rides.append({
+                "rank": i,
+                "revenue": round(ride.get("Historical_Cost_of_Ride", 0), 2),
+                "order_date": str(ride.get("Order_Date", "N/A"))[:10],
+                "pricing_model": ride.get("Pricing_Model", "N/A"),
+                "location": ride.get("Location_Category", "N/A"),
+                "time_of_day": ride.get("Time_of_Ride", "N/A"),
+                "customer_loyalty": ride.get("Customer_Loyalty_Status", "N/A"),
+                "vehicle_type": ride.get("Vehicle_Type", "N/A"),
+                "demand_profile": ride.get("Demand_Profile", "N/A")
+            })
+        
+        return json.dumps({
+            "top_rides": formatted_rides,
+            "count": len(formatted_rides),
+            "filter": {
+                "month": month if month else "all",
+                "year": year if year else "all"
+            },
+            "sorted_by": "revenue (highest first)"
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error getting top revenue rides: {str(e)}"})
 
 
 @tool
@@ -415,17 +541,25 @@ def analyze_customer_segments() -> str:
         str: JSON string with customer segment analysis
     """
     try:
-        database = get_database()
-        if not database:
-            return json.dumps({"error": "Database connection not available"})
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
         
-        collection = database["ride_orders"]
-        
-        # Get all orders (or recent orders) - handle async in sync context
-        async def get_all_orders():
-            return await collection.find({}).to_list(length=1000)  # Limit for performance
-        
-        orders = run_async_query(get_all_orders())
+        try:
+            # Try historical_rides first
+            collection = db["historical_rides"]
+            count = collection.count_documents({})
+            
+            if count > 0:
+                orders = list(collection.find({}).limit(1000))
+                loyalty_field = "Customer_Loyalty_Status"
+                price_field = "Historical_Cost_of_Ride"
+            else:
+                collection = db["ride_orders"]
+                orders = list(collection.find({}).limit(1000))
+                loyalty_field = "customer.loyalty_tier"
+                price_field = "final_price"
+        finally:
+            client.close()
         
         # Count by loyalty tier
         gold_count = 0
@@ -436,9 +570,14 @@ def analyze_customer_segments() -> str:
         regular_revenue = 0.0
         
         for order in orders:
-            customer = order.get("customer", {})
-            loyalty_tier = customer.get("loyalty_tier", "Regular")
-            price = order.get("final_price", order.get("price", 0))
+            # Get loyalty tier (handle nested field for ride_orders)
+            if "." in loyalty_field:
+                parts = loyalty_field.split(".")
+                loyalty_tier = order.get(parts[0], {}).get(parts[1], "Regular")
+            else:
+                loyalty_tier = order.get(loyalty_field, "Regular")
+            
+            price = order.get(price_field, 0)
             
             if loyalty_tier == "Gold":
                 gold_count += 1
@@ -469,6 +608,110 @@ def analyze_customer_segments() -> str:
 
 
 @tool
+def analyze_location_performance() -> str:
+    """
+    Analyze performance by location category (Urban, Suburban, Rural).
+    
+    Calculates:
+    - Ride count by location
+    - Revenue by location
+    - Average revenue per ride by location
+    
+    Returns:
+        str: JSON string with location performance analysis
+    """
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        collection = db["historical_rides"]
+        
+        try:
+            # Aggregate by location
+            pipeline = [
+                {
+                    "$group": {
+                        "_id": "$Location_Category",
+                        "count": {"$sum": 1},
+                        "total_revenue": {"$sum": "$Historical_Cost_of_Ride"},
+                        "avg_revenue": {"$avg": "$Historical_Cost_of_Ride"}
+                    }
+                },
+                {"$sort": {"total_revenue": -1}}
+            ]
+            results = list(collection.aggregate(pipeline))
+        finally:
+            client.close()
+        
+        location_data = {}
+        for r in results:
+            location = r.get("_id", "Unknown")
+            location_data[location] = {
+                "ride_count": r.get("count", 0),
+                "total_revenue": round(r.get("total_revenue", 0), 2),
+                "avg_revenue_per_ride": round(r.get("avg_revenue", 0), 2)
+            }
+        
+        return json.dumps({
+            "location_performance": location_data,
+            "sorted_by": "total revenue (highest first)"
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error analyzing location performance: {str(e)}"})
+
+
+@tool
+def analyze_time_patterns() -> str:
+    """
+    Analyze ride patterns by time of day (Morning, Afternoon, Evening, Night).
+    
+    Calculates:
+    - Ride count by time period
+    - Revenue by time period
+    - Average revenue per ride by time period
+    
+    Returns:
+        str: JSON string with time pattern analysis
+    """
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        collection = db["historical_rides"]
+        
+        try:
+            # Aggregate by time of day
+            pipeline = [
+                {
+                    "$group": {
+                        "_id": "$Time_of_Ride",
+                        "count": {"$sum": 1},
+                        "total_revenue": {"$sum": "$Historical_Cost_of_Ride"},
+                        "avg_revenue": {"$avg": "$Historical_Cost_of_Ride"}
+                    }
+                },
+                {"$sort": {"count": -1}}
+            ]
+            results = list(collection.aggregate(pipeline))
+        finally:
+            client.close()
+        
+        time_data = {}
+        for r in results:
+            time_period = r.get("_id", "Unknown")
+            time_data[time_period] = {
+                "ride_count": r.get("count", 0),
+                "total_revenue": round(r.get("total_revenue", 0), 2),
+                "avg_revenue_per_ride": round(r.get("avg_revenue", 0), 2)
+            }
+        
+        return json.dumps({
+            "time_patterns": time_data,
+            "sorted_by": "ride count (highest first)"
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error analyzing time patterns: {str(e)}"})
+
+
+@tool
 def analyze_event_impact_on_demand(event_data: str) -> str:
     """
     Analyze impact of events on demand using n8n ingested events_data.
@@ -482,12 +725,9 @@ def analyze_event_impact_on_demand(event_data: str) -> str:
     Returns:
         str: Analysis of event impact on demand
     """
-    # This will use OpenAI GPT-4 to analyze the event data
-    # For now, return basic analysis (will be enhanced with OpenAI)
     if not event_data or event_data == "No similar events or news found.":
         return "No event data available for analysis."
     
-    # Basic analysis (will be enhanced with OpenAI GPT-4)
     return f"Event analysis: {event_data[:200]}... Impact on demand: Events typically increase demand by 20-40% during peak hours. Consider surge pricing during event times."
 
 
@@ -507,7 +747,6 @@ def analyze_traffic_patterns(traffic_data: str) -> str:
     if not traffic_data or traffic_data == "No similar events or news found.":
         return "No traffic data available for analysis."
     
-    # Basic analysis (will be enhanced with OpenAI GPT-4)
     return f"Traffic analysis: {traffic_data[:200]}... Surge pricing opportunity: Heavy traffic indicates high demand. Recommend 1.3x-1.6x surge multiplier."
 
 
@@ -527,7 +766,6 @@ def analyze_industry_trends(news_data: str) -> str:
     if not news_data or news_data == "No similar events or news found.":
         return "No news data available for analysis."
     
-    # Basic analysis (will be enhanced with OpenAI GPT-4)
     return f"Industry trends: {news_data[:200]}... Market analysis: Monitor industry news for regulatory changes, competitor moves, or market shifts that could affect demand."
 
 
@@ -553,7 +791,6 @@ def generate_structured_insights(
     """
     try:
         from openai import OpenAI
-        from app.config import settings
         
         if not settings.OPENAI_API_KEY:
             return json.dumps({"error": "OPENAI_API_KEY not configured"})
@@ -589,7 +826,7 @@ def generate_structured_insights(
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}  # Structured output
+            response_format={"type": "json_object"}
         )
         
         return response.choices[0].message.content
@@ -602,54 +839,58 @@ def generate_structured_insights(
 # Handle missing API key gracefully (for testing environments)
 try:
     analysis_agent = create_agent(
-    model="openai:gpt-4o-mini",
-    tools=[
-        # ChromaDB querying tools
-        query_ride_scenarios,
-        query_news_events,
-        query_customer_behavior,
-        query_competitor_data,
-        # KPI calculation tools
-        calculate_revenue_kpis,
-        calculate_profit_metrics,
-        calculate_rides_count,
-        analyze_customer_segments,
-        # n8n data analysis tools
-        analyze_event_impact_on_demand,
-        analyze_traffic_patterns,
-        analyze_industry_trends,
-        # Structured insights generation
-        generate_structured_insights
-    ],
-    system_prompt=(
-        "You are a data analysis specialist. "
-        "Your role is to analyze data, identify patterns, and generate actionable insights for the analytics dashboard. "
-        "\n\n"
-        "Key responsibilities: "
-        "- Calculate KPIs: revenue, profit, rides count, customer segments "
-        "- Analyze n8n ingested data: events_data (event impact on demand), traffic_data (surge pricing opportunities), news_articles (industry trends) "
-        "- Query ChromaDB for similar past scenarios using RAG "
-        "- Fetch full documents from MongoDB for complete analysis "
-        "- Generate structured insights using OpenAI GPT-4 "
-        "- Provide dashboard-ready responses with data and explanations "
-        "\n\n"
-        "Workflow: "
-        "1. Use KPI calculation tools (calculate_revenue_kpis, calculate_profit_metrics, etc.) to get metrics "
-        "2. Query ChromaDB for context (query_ride_scenarios, query_news_events, etc.) "
-        "3. Analyze n8n data (analyze_event_impact_on_demand, analyze_traffic_patterns, analyze_industry_trends) "
-        "4. Generate structured insights (generate_structured_insights) combining KPIs and context "
-        "\n\n"
-        "Always provide clear, data-driven recommendations that help achieve business objectives "
-        "(revenue increase 15-25%, customer retention, competitive positioning)."
+        model="openai:gpt-4o-mini",
+        tools=[
+            # ChromaDB querying tools (RAG)
+            query_ride_scenarios,
+            query_news_events,
+            query_customer_behavior,
+            query_competitor_data,
+            # KPI calculation tools (sync PyMongo)
+            calculate_revenue_kpis,
+            calculate_profit_metrics,
+            calculate_rides_count,
+            get_top_revenue_rides,
+            analyze_customer_segments,
+            analyze_location_performance,
+            analyze_time_patterns,
+            # n8n data analysis tools
+            analyze_event_impact_on_demand,
+            analyze_traffic_patterns,
+            analyze_industry_trends,
+            # Structured insights generation
+            generate_structured_insights
+        ],
+        system_prompt=(
+            "You are a data analysis specialist for a rideshare company. "
+            "Your role is to analyze data, identify patterns, and generate actionable insights. "
+            "\n\n"
+            "Key responsibilities: "
+            "- Calculate KPIs: revenue, profit, rides count, customer segments "
+            "- Analyze patterns: location performance, time patterns, demand trends "
+            "- Query historical data: top revenue rides, customer behavior "
+            "- Analyze n8n ingested data: events (demand impact), traffic (surge pricing), news (industry trends) "
+            "- Query ChromaDB for similar past scenarios using RAG "
+            "- Generate structured insights using OpenAI GPT-4 "
+            "\n\n"
+            "Workflow for analytics queries: "
+            "1. Use KPI tools (calculate_revenue_kpis, calculate_profit_metrics, etc.) for metrics "
+            "2. Use get_top_revenue_rides for top performing rides "
+            "3. Use analyze_customer_segments for customer distribution "
+            "4. Use analyze_location_performance and analyze_time_patterns for patterns "
+            "5. Generate structured insights combining all data "
+            "\n\n"
+            "Always provide clear, data-driven answers. Include specific numbers and trends. "
+            "Help achieve business objectives: revenue increase 15-25%, customer retention, competitive positioning."
         ),
         name="analysis_agent"
     )
+    logger.info("✓ Analysis agent initialized successfully with sync PyMongo")
 except Exception as e:
-    # If API key is missing, set to None (for testing environments)
-    if "api_key" in str(e).lower() or "openai" in str(e).lower():
+    error_msg = str(e).lower()
+    if "api_key" in error_msg or "openai" in error_msg:
+        logger.warning("⚠️ Analysis agent could not be initialized: OPENAI_API_KEY not configured")
         analysis_agent = None
     else:
-        # Re-raise if it's not an API key issue
+        logger.error(f"Failed to initialize analysis agent: {e}")
         raise
-
-

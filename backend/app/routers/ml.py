@@ -107,14 +107,11 @@ async def train_prophet_models() -> Dict[str, Any]:
                 "CUSTOM": pricing_model_counts.get("CUSTOM", 0)
             }
         
-        # Train the model (single model for all pricing types)
-        # Run in thread pool to avoid blocking
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            forecast_model.train,
-            df
-        )
+        # Train the model synchronously
+        # Training takes ~15-30 seconds for 2000 rows, which is acceptable
+        # Using run_in_executor caused CancelledError issues
+        logger.info("Starting model training (synchronous)...")
+        result = forecast_model.train(df)
         
         if not result.get("success", False):
             raise HTTPException(
@@ -122,9 +119,11 @@ async def train_prophet_models() -> Dict[str, Any]:
                 detail=result.get("error", "Training failed")
             )
         
+        logger.info("Training successful, preparing response...")
+        
         # Update training metadata in MongoDB
         try:
-            metadata_collection = database.get_collection("ml_training_metadata")
+            metadata_collection = database["ml_training_metadata"]
             await metadata_collection.update_one(
                 {"type": "last_training"},
                 {
@@ -136,6 +135,7 @@ async def train_prophet_models() -> Dict[str, Any]:
                 },
                 upsert=True
             )
+            logger.info("MongoDB metadata updated successfully")
         except Exception as e:
             logger.warning(f"Failed to update training metadata: {e}")
         
@@ -153,6 +153,7 @@ async def train_prophet_models() -> Dict[str, Any]:
         if pricing_model_breakdown:
             response["pricing_model_breakdown"] = pricing_model_breakdown
         
+        logger.info(f"Returning training response: success={response.get('success')}, rows={response.get('training_rows')}")
         return response
         
     except HTTPException:
@@ -336,6 +337,7 @@ async def _generate_forecast(pricing_model: str, periods: int) -> Dict[str, Any]
             "model": "prophet_ml",
             "pricing_model": pricing_model,
             "periods": periods,
+            "days": periods,  # Alias for periods
             "confidence": 0.80,
             "accuracy": "Training metrics available from /api/ml/train endpoint"
         }

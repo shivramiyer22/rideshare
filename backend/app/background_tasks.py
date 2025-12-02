@@ -40,7 +40,10 @@ async def compute_analytics_kpis() -> Dict[str, Any]:
         Dict with computed KPIs
     """
     try:
-        database = await get_database()
+        database = get_database()  # Synchronous function, don't await
+        if database is None:
+            logger.warning("Database not connected, skipping KPI computation")
+            return {}
         rides_collection = database["historical_rides"]
         
         # Get date ranges

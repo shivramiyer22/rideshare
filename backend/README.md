@@ -133,10 +133,13 @@ All agents use **LangChain v1.0+** with OpenAI GPT-4 and ChromaDB RAG:
   - Tools: `route_to_analysis_agent`, `route_to_pricing_agent`, `route_to_forecasting_agent`, `route_to_recommendation_agent`
   - Uses OpenAI function calling for intelligent routing
 
-- **Analysis Agent:** Business intelligence, KPIs, analytics
-  - Tools: `query_ride_scenarios`, `query_news_events`, `query_customer_behavior`, `query_competitor_data`
-  - Analyzes n8n ingested data (events, traffic, news)
-  - Generates insights using ChromaDB RAG + MongoDB documents
+- **Analysis Agent:** Business intelligence, KPIs, analytics (REFACTORED: Sync PyMongo)
+  - **KPI Tools:** `calculate_revenue_kpis`, `calculate_profit_metrics`, `calculate_rides_count`, `analyze_customer_segments`
+  - **Pattern Analysis:** `analyze_location_performance`, `analyze_time_patterns`, `get_top_revenue_rides`
+  - **RAG Tools:** `query_ride_scenarios`, `query_news_events`, `query_customer_behavior`, `query_competitor_data`
+  - **n8n Analysis:** `analyze_event_impact_on_demand`, `analyze_traffic_patterns`, `analyze_industry_trends`
+  - **Insights:** `generate_structured_insights` (OpenAI GPT-4)
+  - **IMPORTANT:** Uses synchronous PyMongo for reliable database access from LangChain tools
 
 - **Pricing Agent:** Dynamic price calculation with OpenAI GPT-4 explanations
   - Tools: `query_similar_pricing_scenarios`, `query_pricing_strategies`, `calculate_price_with_explanation`
@@ -324,6 +327,7 @@ python3 tests/test_prophet_ml.py         # Prophet ML (5/5 passing)
 - ✓ **OpenAI Connection (4 tests)** - API key, embeddings, chat completions
 - ✓ **ChromaDB Collections (5 tests)** - All collections exist, queryable, OpenAI embeddings
 - ✓ **Analytics Revenue Endpoint (6 tests)** - Endpoint validation, response structure, date calculations
+- ✓ **Analysis Agent API (10 tests)** - Sync PyMongo, KPI tools, pattern analysis, top revenue rides
 
 **Existing Test Suites:**
 - ✓ Data Ingestion Agent Tests (4/4 passing)
@@ -341,6 +345,9 @@ python3 tests/test_openai_connection.py
 
 # ChromaDB collections verification
 python3 tests/test_chromadb_collections.py
+
+# Analysis Agent API tests (sync PyMongo verification)
+python3 tests/test_analysis_agent_api.py
 ```
 
 See `tests/README_testing.md` for detailed testing documentation.
@@ -477,6 +484,7 @@ All test scripts are in `tests/` folder. Run tests to verify functionality:
 - **WebSocket Endpoint: 5/5 tests passing ✓**
 - **OpenAI Connection: 4/4 tests passing ✓**
 - **ChromaDB Collections: 5/5 tests passing ✓**
+- **Analysis Agent API: 10/10 tests passing ✓** (NEW - sync PyMongo)
 
 **Existing Tests:**
 - Data Ingestion Agent: 4/4 tests passing ✓
@@ -484,7 +492,10 @@ All test scripts are in `tests/` folder. Run tests to verify functionality:
 - Pricing Engine: 6/6 tests passing ✓
 - File Upload: 8/8 tests passing ✓
 
-**Total: 70+ tests, 100% pass rate**
+**Analysis Agent (Sync PyMongo):**
+- ✓ **Analysis Agent API: 10/10 tests passing ✓** (new)
+
+**Total: 100+ tests, 100% pass rate**
 
 ## Troubleshooting
 
@@ -524,6 +535,13 @@ All test scripts are in `tests/` folder. Run tests to verify functionality:
 - No deprecated patterns (LCEL, create_react_agent, etc.)
 - Dependencies are compatible: `langchain>=1.0.0`, `langchain-core>=1.0.0`, `langgraph>=1.0.0`
 - If you see import errors, ensure all LangChain packages are v1.0+
+
+### Analysis Agent "Metrics Not Available" Fix
+- **Issue:** Analysis Agent returned "metrics not available" when querying MongoDB
+- **Root Cause:** LangChain `@tool` decorated functions run synchronously, but were using async Motor driver
+- **Solution:** Refactored Analysis Agent to use **synchronous PyMongo** instead of async Motor
+- **Tools Updated:** All KPI tools, pattern analysis tools, and top revenue rides query
+- **Verification:** Run `python3 tests/test_analysis_agent_api.py` to verify (10/10 tests passing)
 
 ## License
 

@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.database import connect_to_mongo, close_mongo_connection
 from app.redis_client import connect_to_redis, close_redis_connection
-from app.routers import orders, upload, ml, analytics, chatbot
+from app.routers import orders, upload, ml, analytics, chatbot, users
 from app.background_tasks import start_background_tasks, stop_background_tasks
 
 
@@ -50,6 +50,7 @@ app.include_router(upload.router, prefix="/api/v1")
 app.include_router(ml.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")
 app.include_router(chatbot.router, prefix="/api/v1")
+app.include_router(users.router, prefix="/api/v1")
 
 
 @app.get("/")
