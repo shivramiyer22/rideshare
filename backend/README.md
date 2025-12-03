@@ -487,9 +487,85 @@ MongoDB Collections → Change Tracker → Hourly Scheduler
 - `analyze_competitor_data_for_pipeline()` - HWCO vs competitor comparison with GPT-4o explanation
 - `analyze_external_data_for_pipeline()` - News, events, traffic synthesis with GPT-4o explanation
 - `generate_pricing_rules_for_pipeline()` - Auto-generate pricing rules with GPT-4o explanation
-- `calculate_whatif_impact_for_pipeline()` - KPI impact simulation with GPT-4o explanation
+- `calculate_whatif_impact_for_pipeline()` - KPI impact simulation mapped to 4 business objectives
 
-**Forecasting Phase Details:**
+**Business Objectives Integration:**
+The Recommendation Agent explicitly addresses ALL 4 business objectives:
+1. **Maximize Revenue:** 15-25% increase through intelligent pricing
+   - Actions: Urban pricing optimization, surge pricing strategies
+   - KPI: Revenue increase percentage
+2. **Maximize Profit Margins:** Optimize without losing customers
+   - Actions: Operational efficiency, pricing model optimization
+   - KPI: Profit margin improvement percentage
+3. **Stay Competitive:** Real-time competitor analysis
+   - Actions: Competitive pricing adjustments, market positioning
+   - KPI: Market gap closure percentage
+4. **Customer Retention:** 10-15% churn reduction
+   - Actions: Loyalty program enhancements, surge caps for Gold customers
+   - KPI: Churn reduction percentage
+
+**Recommendation Output Structure:**
+```json
+{
+  "recommendations_by_objective": {
+    "revenue": {
+      "actions": ["Apply 1.12x multiplier to urban routes"],
+      "expected_impact": "+18% revenue",
+      "priority": "high"
+    },
+    "profit_margin": {...},
+    "competitive": {...},
+    "retention": {...}
+  },
+  "integrated_strategy": "Summary of how all recommendations work together",
+  "expected_impact": {
+    "revenue_increase": "18-23%",
+    "profit_margin_improvement": "5-7%",
+    "churn_reduction": "12%",
+    "competitive_positioning": "close 5% gap",
+    "confidence": "High"
+  },
+  "implementation_phases": [...]
+}
+```
+
+**What-If Analysis Visualization Support:**
+- **Endpoint:** `POST /api/v1/analytics/what-if-analysis`
+- **Purpose:** Calculate projected impact across 30/60/90 day forecast periods
+- **Returns:**
+  - `baseline`: Current KPIs (revenue, rides, margins, churn)
+  - `projections`: Day-by-day projections for 30d, 60d, 90d
+  - `business_objectives_impact`: Impact breakdown for all 4 objectives
+  - `visualization_data`: Chart-ready data (revenue_trend, objectives_summary, kpi_cards)
+  - `confidence`: Overall confidence level
+
+**Visualization Data Structure:**
+```json
+{
+  "revenue_trend": {
+    "labels": ["Day 1", "Day 5", "Day 10", ...],
+    "baseline": [372502, 372502, ...],
+    "projected_30d": [375048, 385229, ...],
+    "projected_60d": [...],
+    "projected_90d": [...]
+  },
+  "objectives_summary": {
+    "labels": ["Revenue", "Profit Margin", "Competitive", "Retention"],
+    "baseline": [0, 40, 0, 25],
+    "projected": [20, 46, 5, 13],
+    "targets": [20, 45, 5, 15],
+    "target_met": [true, true, true, false]
+  },
+  "kpi_cards": [
+    {"title": "Revenue Increase", "value": "20%", "target": "15-25%", "status": "success"},
+    {"title": "Profit Margin", "value": "+6%", "target": "Optimize", "status": "success"},
+    {"title": "Competitive Gap", "value": "5% closed", "target": "Parity", "status": "success"},
+    {"title": "Churn Reduction", "value": "12%", "target": "10-15%", "status": "success"}
+  ]
+}
+```
+
+**Pipeline-Specific Analysis Tools:**
 1. Check if `historical_rides` or `competitor_prices` collections changed
 2. If changed → Retrain Prophet ML model with latest combined data (HWCO + competitor)
 3. Generate 30/60/90-day forecasts for CONTRACTED, STANDARD, CUSTOM pricing
@@ -754,6 +830,43 @@ Once the server is running, you can access:
   - Returns: `total_revenue`, `total_rides`, `avg_revenue_per_ride`, `customer_distribution`, `revenue_chart_data`, `top_routes`
   - Period options: `7d`, `30d`, `60d`, `90d` (default: `30d`)
   - Queries MongoDB for revenue, rides, customer distribution, and top routes
+
+- `POST /api/v1/analytics/what-if-analysis` - What-If Impact Analysis for recommendations (NEW)
+  - **Purpose:** Calculate projected impact of recommendations on all 4 business objectives
+  - **Input:** Recommendation structure with `recommendations_by_objective` (revenue, profit_margin, competitive, retention)
+  - **Query Parameters:** `forecast_periods` (default: [30, 60, 90])
+  - **Returns:**
+    - `baseline`: Current metrics (revenue, rides, profit margin, churn rate)
+    - `projections`: Day-by-day projections for 30d, 60d, 90d periods
+    - `business_objectives_impact`: Impact breakdown per objective with target_met flags
+    - `visualization_data`: Chart-ready data for frontend
+      - `revenue_trend`: Line chart data (baseline vs projections)
+      - `objectives_summary`: Bar chart data (4 objectives with targets)
+      - `kpi_cards`: Card widgets data (value, target, status)
+    - `confidence`: Overall confidence level (high/medium/low)
+  - **Business Objectives Tracked:**
+    1. Revenue: 15-25% increase target
+    2. Profit Margin: Optimization target
+    3. Competitive Position: Market parity target
+    4. Customer Retention: 10-15% churn reduction target
+  - **Example Usage:**
+    ```bash
+    curl -X POST 'http://localhost:8000/api/v1/analytics/what-if-analysis' \
+      -H 'Content-Type: application/json' \
+      -d '{
+        "recommendations_by_objective": {
+          "revenue": {"actions": ["Urban pricing 1.12x"], "expected_impact": "+18%", "priority": "high"},
+          "profit_margin": {"actions": ["Reduce CUSTOM to 2%"], "expected_impact": "+6%", "priority": "high"},
+          "competitive": {"actions": ["Match rural pricing"], "expected_impact": "Close 5% gap", "priority": "medium"},
+          "retention": {"actions": ["Gold surge cap 1.25x"], "expected_impact": "-12% churn", "priority": "high"}
+        },
+        "expected_impact": {
+          "revenue_increase": "20%",
+          "profit_margin_improvement": "6%",
+          "churn_reduction": "12%"
+        }
+      }'
+    ```
 
 ### Chatbot (WebSocket & HTTP)
 - `WebSocket /api/v1/chatbot/ws` - Real-time AI agent communication

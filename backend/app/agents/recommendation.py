@@ -444,14 +444,15 @@ def generate_strategic_recommendation(context: Dict[str, Any]) -> Dict[str, Any]
             """
         
         prompt = f"""
-        Generate a strategic business recommendation for a rideshare company to achieve business objectives.
+        Generate a strategic business recommendation for a rideshare company to achieve FOUR business objectives.
         
-        Business Objectives:
-        - Revenue increase: 15-25%
-        - Customer retention: 10-15% churn reduction
-        - Competitive positioning
+        BUSINESS OBJECTIVES (ALL MUST BE ADDRESSED):
+        1. **Maximize Revenue:** Increase 15-25% through intelligent pricing
+        2. **Maximize Profit Margins:** Optimize without losing customers  
+        3. **Stay Competitive:** Real-time competitor analysis and positioning
+        4. **Customer Retention:** Reduce churn 10-15%
         
-        Strategy Knowledge (PRIMARY RAG source):
+        Strategy Knowledge (from pricing_strategies MongoDB collection):
         {strategy[:1000] if strategy and strategy != "No strategic knowledge found." else "No strategy knowledge available"}
         
         Recent Events (from n8n ingested data):
@@ -463,19 +464,75 @@ def generate_strategic_recommendation(context: Dict[str, Any]) -> Dict[str, Any]
         {forecast_text if forecast_text else ""}
         
         Generate a strategic recommendation in JSON format with:
-        1. recommendation: A clear, actionable strategic recommendation (2-3 sentences)
-        2. reasoning: Why this recommendation makes sense based on the data (2-3 sentences)
-        3. expected_impact: Object with:
-           - revenue_increase: Percentage or range (e.g., "15-25%" or "20%")
+        1. recommendations_by_objective: Object with 4 keys (revenue, profit_margin, competitive, retention), 
+           each containing:
+           - actions: Array of specific action items
+           - expected_impact: String describing impact
+           - priority: "high", "medium", or "low"
+        
+        2. integrated_strategy: A 2-3 sentence summary explaining how all recommendations work together
+        
+        3. reasoning: Why these recommendations make sense based on the data (2-3 sentences)
+        
+        4. expected_impact: Object with:
+           - revenue_increase: Percentage range (e.g., "18-23%")
+           - profit_margin_improvement: Percentage (e.g., "5-7%")
+           - churn_reduction: Percentage (e.g., "12%")
+           - competitive_positioning: String (e.g., "move from 5% behind to competitive parity")
            - confidence: "High", "Medium", or "Low"
         
-        Focus on:
-        - Revenue optimization (15-25% increase target)
-        - Customer retention strategies
-        - Competitive positioning
-        - Data-driven decision making
+        5. implementation_phases: Array of phases with:
+           - phase_name: String (e.g., "Week 1", "Month 1")
+           - actions: Array of actions
+           - expected_timeline: String
         
-        Example: If n8n detects Lakers game and forecast shows +45% demand, recommend surge pricing 1.7x during game hours.
+        REQUIREMENTS:
+        - Every recommendation must map to at least one of the 4 business objectives
+        - Include specific numbers and percentages wherever possible
+        - Reference actual data from strategy knowledge and competitor analysis
+        - Ensure recommendations are actionable and measurable
+        
+        Example structure:
+        {{
+          "recommendations_by_objective": {{
+            "revenue": {{
+              "actions": ["Apply 1.12x multiplier to urban routes (Gap: +14.9%)", "Implement evening rush surge 1.25x"],
+              "expected_impact": "+18% revenue from pricing optimization",
+              "priority": "high"
+            }},
+            "profit_margin": {{
+              "actions": ["Reduce CUSTOM pricing (7.2% → 2%)", "Optimize operational efficiency"],
+              "expected_impact": "+6% margin improvement",
+              "priority": "high"
+            }},
+            "competitive": {{
+              "actions": ["Match competitor pricing in rural areas", "Exceed urban competitor pricing by 5%"],
+              "expected_impact": "Close 5% market share gap",
+              "priority": "high"
+            }},
+            "retention": {{
+              "actions": ["Cap surge at 1.25x for Gold customers", "Launch Silver→Gold upgrade path"],
+              "expected_impact": "-12% churn rate",
+              "priority": "high"
+            }}
+          }},
+          "integrated_strategy": "Focus on urban premium pricing and loyalty protection to maximize revenue while retaining customers, using competitor data to stay competitive.",
+          "reasoning": "Analysis shows HWCO is underpriced in urban areas by 14.9% vs competitors, presenting immediate revenue opportunity. Gold customer protection prevents churn during pricing adjustments.",
+          "expected_impact": {{
+            "revenue_increase": "18-23%",
+            "profit_margin_improvement": "5-7%", 
+            "churn_reduction": "12%",
+            "competitive_positioning": "close 5% gap and achieve parity",
+            "confidence": "High"
+          }},
+          "implementation_phases": [
+            {{
+              "phase_name": "Week 1 - Quick Wins",
+              "actions": ["Urban price multiplier 1.12x", "Gold customer surge cap"],
+              "expected_timeline": "7 days"
+            }}
+          ]
+        }}
         
         Return ONLY valid JSON, no additional text.
         """
@@ -489,12 +546,22 @@ def generate_strategic_recommendation(context: Dict[str, Any]) -> Dict[str, Any]
         recommendation_json = json.loads(response.choices[0].message.content)
         
         return {
-            "recommendation": recommendation_json.get("recommendation", "No recommendation generated"),
+            "recommendations_by_objective": recommendation_json.get("recommendations_by_objective", {
+                "revenue": {"actions": [], "expected_impact": "Unknown", "priority": "medium"},
+                "profit_margin": {"actions": [], "expected_impact": "Unknown", "priority": "medium"},
+                "competitive": {"actions": [], "expected_impact": "Unknown", "priority": "medium"},
+                "retention": {"actions": [], "expected_impact": "Unknown", "priority": "medium"}
+            }),
+            "integrated_strategy": recommendation_json.get("integrated_strategy", "No integrated strategy provided"),
             "reasoning": recommendation_json.get("reasoning", "No reasoning provided"),
             "expected_impact": recommendation_json.get("expected_impact", {
                 "revenue_increase": "15-25%",
+                "profit_margin_improvement": "0%",
+                "churn_reduction": "0%",
+                "competitive_positioning": "Unknown",
                 "confidence": "Medium"
             }),
+            "implementation_phases": recommendation_json.get("implementation_phases", []),
             "data_sources": mongodb_ids
         }
         
@@ -514,12 +581,38 @@ def generate_strategic_recommendation(context: Dict[str, Any]) -> Dict[str, Any]
             recommendation += f"Competitor insights: {competitor[:200]}... "
         
         return {
-            "recommendation": recommendation,
-            "reasoning": f"Combined analysis of strategy knowledge, recent events, and competitor data. Error generating detailed recommendation: {str(e)[:100]}",
+            "recommendations_by_objective": {
+                "revenue": {
+                    "actions": ["Analyze pricing opportunities"],
+                    "expected_impact": "15-25% increase target",
+                    "priority": "high"
+                },
+                "profit_margin": {
+                    "actions": ["Optimize operational efficiency"],
+                    "expected_impact": "Margin improvement",
+                    "priority": "medium"
+                },
+                "competitive": {
+                    "actions": ["Monitor competitor pricing"],
+                    "expected_impact": "Maintain competitive position",
+                    "priority": "medium"
+                },
+                "retention": {
+                    "actions": ["Protect customer loyalty tiers"],
+                    "expected_impact": "10-15% churn reduction",
+                    "priority": "high"
+                }
+            },
+            "integrated_strategy": recommendation,
+            "reasoning": f"Combined analysis of available data. Error generating detailed recommendation: {str(e)[:100]}",
             "expected_impact": {
                 "revenue_increase": "15-25%",
-                "confidence": "Medium"
+                "profit_margin_improvement": "0%",
+                "churn_reduction": "10%",
+                "competitive_positioning": "Maintain position",
+                "confidence": "Low"
             },
+            "implementation_phases": [],
             "data_sources": mongodb_ids
         }
 

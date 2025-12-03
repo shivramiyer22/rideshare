@@ -1692,21 +1692,22 @@ def _generate_pricing_rules_explanation(rules, location_stats, time_stats) -> st
 @tool
 def calculate_whatif_impact_for_pipeline(recommendations: str) -> str:
     """
-    Calculate what-if impact analysis for pipeline recommendations.
+    Calculate what-if impact analysis for pipeline recommendations across all 4 business objectives.
     
-    This tool estimates the KPI impact of proposed recommendations:
-    - Revenue impact
-    - Profit margin impact
-    - Customer retention impact
-    - Competitive positioning impact
+    This tool estimates the KPI impact of proposed recommendations mapped to:
+    1. Revenue (15-25% increase target)
+    2. Profit Margin (optimize without losing customers)
+    3. Competitive Position (achieve market parity/leadership)
+    4. Customer Retention (10-15% churn reduction)
     
     Used by: Pipeline Orchestrator (What-If Phase)
     
     Args:
         recommendations: JSON string with recommendations from Recommendation Agent
+                        Expected structure: recommendations_by_objective with revenue, profit_margin, competitive, retention
     
     Returns:
-        str: JSON string with impact analysis
+        str: JSON string with impact analysis mapped to 4 objectives
     """
     try:
         # Parse recommendations
@@ -1734,53 +1735,98 @@ def calculate_whatif_impact_for_pipeline(recommendations: str) -> str:
         finally:
             client.close()
         
-        # Estimate impacts based on recommendation types
-        # These are model estimates based on industry benchmarks
+        # Extract expected impact from new recommendation structure
+        expected_impact = recs.get("expected_impact", {})
         
-        revenue_impact_pct = 0
-        retention_impact_pct = 0
-        margin_impact_pct = 0
+        # Parse percentages
+        def extract_percentage(value: str) -> float:
+            if not value:
+                return 0
+            value = value.replace("%", "").strip()
+            if "-" in value:
+                parts = value.split("-")
+                return (float(parts[0]) + float(parts[1])) / 2
+            try:
+                return float(value)
+            except:
+                return 0
         
-        rec_text = json.dumps(recs).lower()
+        revenue_impact_pct = extract_percentage(expected_impact.get("revenue_increase", "0"))
+        margin_impact_pct = extract_percentage(expected_impact.get("profit_margin_improvement", "0"))
+        churn_reduction_pct = extract_percentage(expected_impact.get("churn_reduction", "0"))
         
-        # Surge pricing impact
-        if "surge" in rec_text:
-            revenue_impact_pct += 15
-            margin_impact_pct += 8
-        
-        # Loyalty program impact
-        if "loyalty" in rec_text or "gold" in rec_text or "retention" in rec_text:
-            retention_impact_pct += 12
-            revenue_impact_pct += 5
-        
-        # Competitive pricing impact
-        if "competitive" in rec_text or "competitor" in rec_text:
-            revenue_impact_pct += 8
-            retention_impact_pct += 5
-        
-        # Location-based pricing impact
-        if "urban" in rec_text or "location" in rec_text:
-            revenue_impact_pct += 10
-            margin_impact_pct += 5
-        
-        # Time-based pricing impact
-        if "rush" in rec_text or "peak" in rec_text or "evening" in rec_text or "morning" in rec_text:
-            revenue_impact_pct += 12
-            margin_impact_pct += 7
-        
-        # Cap at reasonable maximums
-        revenue_impact_pct = min(revenue_impact_pct, 25)
-        retention_impact_pct = min(retention_impact_pct, 15)
-        margin_impact_pct = min(margin_impact_pct, 12)
+        # If not in expected_impact, estimate from recommendations_by_objective
+        if revenue_impact_pct == 0:
+            recs_by_obj = recs.get("recommendations_by_objective", {})
+            rec_text = json.dumps(recs_by_obj).lower()
+            
+            # Estimate based on recommendation content
+            if "surge" in rec_text or "multiplier" in rec_text:
+                revenue_impact_pct += 15
+                margin_impact_pct += 8
+            if "loyalty" in rec_text or "gold" in rec_text or "retention" in rec_text:
+                churn_reduction_pct += 12
+                revenue_impact_pct += 5
+            if "competitive" in rec_text or "competitor" in rec_text or "gap" in rec_text:
+                revenue_impact_pct += 8
+                churn_reduction_pct += 5
+            if "urban" in rec_text or "location" in rec_text:
+                revenue_impact_pct += 10
+                margin_impact_pct += 5
+            if "rush" in rec_text or "peak" in rec_text or "evening" in rec_text or "morning" in rec_text:
+                revenue_impact_pct += 12
+                margin_impact_pct += 7
+            
+            # Cap at targets
+            revenue_impact_pct = min(revenue_impact_pct, 25)
+            churn_reduction_pct = min(churn_reduction_pct, 15)
+            margin_impact_pct = min(margin_impact_pct, 12)
         
         # Calculate projected values
         projected_revenue = baseline_revenue * (1 + revenue_impact_pct / 100)
         revenue_increase = projected_revenue - baseline_revenue
         
+        # Calculate impact by business objective
+        objectives_impact = {
+            "revenue": {
+                "objective": "Maximize Revenue: Increase 15-25%",
+                "baseline_value": round(baseline_revenue, 2),
+                "projected_value": round(projected_revenue, 2),
+                "increase_pct": round(revenue_impact_pct, 1),
+                "increase_amount": round(revenue_increase, 2),
+                "target_met": revenue_impact_pct >= 15 and revenue_impact_pct <= 25,
+                "actions_from_recommendations": recs.get("recommendations_by_objective", {}).get("revenue", {}).get("actions", [])
+            },
+            "profit_margin": {
+                "objective": "Maximize Profit Margins",
+                "baseline_margin_pct": 40.0,
+                "projected_margin_pct": round(40.0 + margin_impact_pct, 1),
+                "improvement_pct": round(margin_impact_pct, 1),
+                "target_met": margin_impact_pct >= 5,
+                "actions_from_recommendations": recs.get("recommendations_by_objective", {}).get("profit_margin", {}).get("actions", [])
+            },
+            "competitive": {
+                "objective": "Stay Competitive",
+                "current_position": "5% behind competitors",
+                "projected_position": "competitive parity" if revenue_impact_pct >= 15 else "3% behind",
+                "gap_closed_pct": round(min(revenue_impact_pct / 3, 5), 1),
+                "target_met": revenue_impact_pct >= 15,
+                "actions_from_recommendations": recs.get("recommendations_by_objective", {}).get("competitive", {}).get("actions", [])
+            },
+            "retention": {
+                "objective": "Customer Retention: Reduce churn 10-15%",
+                "baseline_churn_pct": 25.0,
+                "projected_churn_pct": round(25.0 - churn_reduction_pct, 1),
+                "churn_reduction_pct": round(churn_reduction_pct, 1),
+                "target_met": churn_reduction_pct >= 10 and churn_reduction_pct <= 15,
+                "actions_from_recommendations": recs.get("recommendations_by_objective", {}).get("retention", {}).get("actions", [])
+            }
+        }
+        
         # Generate natural language explanation
         explanation = _generate_whatif_explanation(
             baseline_revenue, baseline_rides, baseline_avg,
-            revenue_impact_pct, retention_impact_pct, margin_impact_pct,
+            revenue_impact_pct, churn_reduction_pct, margin_impact_pct,
             projected_revenue, revenue_increase, recs
         )
         
@@ -1788,21 +1834,26 @@ def calculate_whatif_impact_for_pipeline(recommendations: str) -> str:
             "baseline": {
                 "total_revenue": round(baseline_revenue, 2),
                 "ride_count": baseline_rides,
-                "avg_revenue_per_ride": round(baseline_avg, 2)
+                "avg_revenue_per_ride": round(baseline_avg, 2),
+                "profit_margin_pct": 40.0,
+                "churn_rate_pct": 25.0
             },
             "projected_impact": {
                 "revenue_increase_pct": revenue_impact_pct,
-                "retention_improvement_pct": retention_impact_pct,
+                "retention_improvement_pct": churn_reduction_pct,
                 "margin_improvement_pct": margin_impact_pct,
                 "projected_revenue": round(projected_revenue, 2),
                 "revenue_increase_amount": round(revenue_increase, 2)
             },
+            "business_objectives_impact": objectives_impact,
             "business_objectives_alignment": {
-                "revenue_target_15_25": revenue_impact_pct >= 15,
-                "retention_target_10_15": retention_impact_pct >= 10,
-                "targets_met": revenue_impact_pct >= 15 and retention_impact_pct >= 10
+                "revenue_target_met": objectives_impact["revenue"]["target_met"],
+                "profit_margin_target_met": objectives_impact["profit_margin"]["target_met"],
+                "competitive_target_met": objectives_impact["competitive"]["target_met"],
+                "retention_target_met": objectives_impact["retention"]["target_met"],
+                "all_targets_met": all(objectives_impact[obj]["target_met"] for obj in objectives_impact)
             },
-            "confidence": "medium" if revenue_impact_pct > 0 else "low",
+            "confidence": "high" if all(objectives_impact[obj]["target_met"] for obj in objectives_impact) else "medium",
             "explanation": explanation,
             "recommendations_analyzed": recs,
             "generated_at": datetime.now().isoformat()
