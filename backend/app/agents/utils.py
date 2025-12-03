@@ -237,6 +237,347 @@ async def fetch_mongodb_documents(
         return []
 
 
+# ==============================================================================
+# SHARED MONGODB QUERY TOOLS
+# ==============================================================================
+# These tools provide direct MongoDB access for all agents.
+# They can be imported and added to any agent's tool list.
+# Use these when you need ACTUAL data from the database, not ChromaDB/RAG.
+# ==============================================================================
+
+
+def get_sync_mongodb_client():
+    """Get synchronous MongoDB client (for tools that need sync access)."""
+    import pymongo
+    return pymongo.MongoClient(settings.mongodb_url)
+
+
+def query_historical_rides(
+    month: str = "",
+    year: str = "",
+    pricing_model: str = "",
+    location_category: str = "",
+    limit: int = 100
+) -> List[Dict[str, Any]]:
+    """
+    Query historical_rides MongoDB collection directly.
+    
+    Use this tool to get actual historical ride data from the database.
+    Returns raw ride records with pricing, location, customer info.
+    
+    Args:
+        month: Filter by month name (e.g., "November") or number (1-12). Empty for all.
+        year: Filter by year (e.g., "2024"). Empty for all.
+        pricing_model: Filter by pricing model ("CONTRACTED", "STANDARD", "CUSTOM"). Empty for all.
+        location_category: Filter by location ("Urban", "Suburban", "Rural"). Empty for all.
+        limit: Maximum number of records to return (default: 100)
+    
+    Returns:
+        List of historical ride documents from MongoDB
+    """
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        collection = db["historical_rides"]
+        
+        # Build query filter
+        query = {}
+        
+        # Month filter using aggregation
+        month_map = {
+            "january": 1, "february": 2, "march": 3, "april": 4,
+            "may": 5, "june": 6, "july": 7, "august": 8,
+            "september": 9, "october": 10, "november": 11, "december": 12
+        }
+        
+        month_num = None
+        if month:
+            if month.lower() in month_map:
+                month_num = month_map[month.lower()]
+            elif month.isdigit():
+                month_num = int(month)
+        
+        if pricing_model:
+            query["Pricing_Model"] = pricing_model.upper()
+        
+        if location_category:
+            query["Location_Category"] = location_category.title()
+        
+        try:
+            if month_num:
+                # Use aggregation for month filtering
+                pipeline = [
+                    {"$addFields": {"order_month": {"$month": "$Order_Date"}}},
+                    {"$match": {"order_month": month_num, **query}},
+                    {"$limit": limit}
+                ]
+                results = list(collection.aggregate(pipeline))
+            else:
+                results = list(collection.find(query).limit(limit))
+            
+            # Convert ObjectId to string for serialization
+            for doc in results:
+                if "_id" in doc:
+                    doc["_id"] = str(doc["_id"])
+                if "Order_Date" in doc:
+                    doc["Order_Date"] = str(doc["Order_Date"])
+            
+            return results
+        finally:
+            client.close()
+            
+    except Exception as e:
+        logger.error(f"Error querying historical_rides: {e}")
+        return []
+
+
+def query_competitor_prices(
+    service_type: str = "",
+    location: str = "",
+    pricing_model: str = "",
+    limit: int = 100
+) -> List[Dict[str, Any]]:
+    """
+    Query competitor_prices MongoDB collection directly.
+    
+    Use this tool to get actual competitor (Lyft) pricing data from the database.
+    Returns raw competitor price records for competitive analysis.
+    
+    Args:
+        service_type: Filter by service type or company (e.g., "Lyft"). Empty for all.
+        location: Filter by Location_Category (e.g., "Urban", "Suburban"). Empty for all.
+        pricing_model: Filter by Pricing_Model (e.g., "STANDARD"). Empty for all.
+        limit: Maximum number of records to return (default: 100)
+    
+    Returns:
+        List of competitor price documents from MongoDB
+    """
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        collection = db["competitor_prices"]
+        
+        # Build query filter - field names match historical_rides structure
+        query = {}
+        if service_type:
+            # Try both competitor_name and Rideshare_Company fields
+            query["$or"] = [
+                {"competitor_name": {"$regex": service_type, "$options": "i"}},
+                {"Rideshare_Company": {"$regex": service_type, "$options": "i"}}
+            ]
+        if location:
+            query["Location_Category"] = {"$regex": location, "$options": "i"}
+        if pricing_model:
+            query["Pricing_Model"] = pricing_model.upper()
+        
+        try:
+            results = list(collection.find(query).limit(limit))
+            
+            # Convert ObjectId to string and normalize date fields for serialization
+            for doc in results:
+                if "_id" in doc:
+                    doc["_id"] = str(doc["_id"])
+                if "Order_Date" in doc:
+                    doc["Order_Date"] = str(doc["Order_Date"])
+            
+            return results
+        finally:
+            client.close()
+            
+    except Exception as e:
+        logger.error(f"Error querying competitor_prices: {e}")
+        return []
+
+
+def query_events_data(
+    event_type: str = "",
+    location: str = "",
+    limit: int = 50
+) -> List[Dict[str, Any]]:
+    """
+    Query events_data MongoDB collection directly.
+    
+    Use this tool to get actual event data (from n8n Eventbrite integration).
+    Returns events that may affect ride demand (concerts, sports, conferences).
+    
+    Args:
+        event_type: Filter by event type (e.g., "concert", "sports"). Empty for all.
+        location: Filter by location/venue. Empty for all.
+        limit: Maximum number of records to return (default: 50)
+    
+    Returns:
+        List of event documents from MongoDB
+    """
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        collection = db["events_data"]
+        
+        # Build query filter
+        query = {}
+        if event_type:
+            query["event_type"] = {"$regex": event_type, "$options": "i"}
+        if location:
+            query["$or"] = [
+                {"venue": {"$regex": location, "$options": "i"}},
+                {"location": {"$regex": location, "$options": "i"}}
+            ]
+        
+        try:
+            results = list(collection.find(query).sort("event_date", -1).limit(limit))
+            
+            # Convert ObjectId to string for serialization
+            for doc in results:
+                if "_id" in doc:
+                    doc["_id"] = str(doc["_id"])
+            
+            return results
+        finally:
+            client.close()
+            
+    except Exception as e:
+        logger.error(f"Error querying events_data: {e}")
+        return []
+
+
+def query_traffic_data(
+    location: str = "",
+    limit: int = 50
+) -> List[Dict[str, Any]]:
+    """
+    Query traffic_data MongoDB collection directly.
+    
+    Use this tool to get actual traffic data (from n8n Google Maps integration).
+    Returns traffic conditions that affect ride pricing and duration.
+    
+    Args:
+        location: Filter by location. Empty for all.
+        limit: Maximum number of records to return (default: 50)
+    
+    Returns:
+        List of traffic data documents from MongoDB
+    """
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        collection = db["traffic_data"]
+        
+        # Build query filter
+        query = {}
+        if location:
+            query["location"] = {"$regex": location, "$options": "i"}
+        
+        try:
+            results = list(collection.find(query).sort("timestamp", -1).limit(limit))
+            
+            # Convert ObjectId to string for serialization
+            for doc in results:
+                if "_id" in doc:
+                    doc["_id"] = str(doc["_id"])
+            
+            return results
+        finally:
+            client.close()
+            
+    except Exception as e:
+        logger.error(f"Error querying traffic_data: {e}")
+        return []
+
+
+def query_news_data(
+    topic: str = "",
+    limit: int = 20
+) -> List[Dict[str, Any]]:
+    """
+    Query rideshare_news MongoDB collection directly.
+    
+    Use this tool to get actual news articles (from n8n NewsAPI integration).
+    Returns industry news that may affect strategic decisions.
+    
+    Args:
+        topic: Filter by topic/keyword in title or content. Empty for all.
+        limit: Maximum number of records to return (default: 20)
+    
+    Returns:
+        List of news article documents from MongoDB
+    """
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        
+        # Try rideshare_news first, fallback to news_articles
+        collection = db["rideshare_news"]
+        if collection.count_documents({}) == 0:
+            collection = db["news_articles"]
+        
+        # Build query filter
+        query = {}
+        if topic:
+            query["$or"] = [
+                {"title": {"$regex": topic, "$options": "i"}},
+                {"summary": {"$regex": topic, "$options": "i"}},
+                {"content": {"$regex": topic, "$options": "i"}}
+            ]
+        
+        try:
+            results = list(collection.find(query).sort("published_at", -1).limit(limit))
+            
+            # Convert ObjectId to string for serialization
+            for doc in results:
+                if "_id" in doc:
+                    doc["_id"] = str(doc["_id"])
+            
+            return results
+        finally:
+            client.close()
+            
+    except Exception as e:
+        logger.error(f"Error querying news data: {e}")
+        return []
+
+
+def get_mongodb_collection_stats() -> Dict[str, Any]:
+    """
+    Get statistics about all MongoDB collections.
+    
+    Use this tool to understand what data is available in the database.
+    Returns document counts for all relevant collections.
+    
+    Returns:
+        Dictionary with collection names and document counts
+    """
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        
+        collections = [
+            "historical_rides",
+            "competitor_prices",
+            "events_data",
+            "traffic_data",
+            "rideshare_news",
+            "news_articles",
+            "pricing_strategies"
+        ]
+        
+        try:
+            stats = {}
+            for coll_name in collections:
+                try:
+                    count = db[coll_name].count_documents({})
+                    stats[coll_name] = count
+                except Exception:
+                    stats[coll_name] = 0
+            
+            return stats
+        finally:
+            client.close()
+            
+    except Exception as e:
+        logger.error(f"Error getting collection stats: {e}")
+        return {}
+
+
 def format_documents_as_context(documents: List[Dict[str, Any]]) -> str:
     """
     Format MongoDB documents as a readable context string for AI agents.

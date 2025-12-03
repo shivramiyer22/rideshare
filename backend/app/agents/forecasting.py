@@ -17,13 +17,254 @@ from typing import Dict, Any, List
 from datetime import datetime
 import asyncio
 import json
-from app.agents.utils import query_chromadb, fetch_mongodb_documents, format_documents_as_context
+from app.agents.utils import (
+    query_chromadb, 
+    fetch_mongodb_documents, 
+    format_documents_as_context,
+    query_historical_rides,
+    query_events_data,
+    query_traffic_data,
+    query_news_data
+)
 from app.forecasting_ml import RideshareForecastModel
 from app.config import settings
+from app.pricing_engine import PricingEngine
+from app.agents.forecasting_helpers import (
+    forecast_demand_for_segment,
+    forecast_price_for_segment,
+    calculate_revenue_forecast,
+    prepare_historical_data_for_prophet
+)
 
 
 # Initialize forecasting model instance
 forecast_model = RideshareForecastModel()
+
+# Initialize PricingEngine instance for price calculations
+pricing_engine = PricingEngine()
+
+
+@tool
+def get_historical_demand_data(
+    month: str = "",
+    pricing_model: str = "",
+    limit: int = 100
+) -> str:
+    """
+    Query actual historical ride demand data from MongoDB.
+    
+    Use this tool to understand past demand patterns for forecasting.
+    Returns ride counts, prices, and timing patterns from actual data.
+    
+    Args:
+        month: Month name (e.g., "November") or number (1-12). Empty for all.
+        pricing_model: "CONTRACTED", "STANDARD", or "CUSTOM". Empty for all.
+        limit: Maximum records (default: 100)
+    
+    Returns:
+        str: JSON string with historical demand statistics
+    """
+    try:
+        results = query_historical_rides(
+            month=month,
+            pricing_model=pricing_model,
+            limit=limit
+        )
+        
+        if not results:
+            return json.dumps({"error": "No historical data found", "count": 0})
+        
+        # Analyze demand patterns
+        by_time = {}
+        by_location = {}
+        by_model = {}
+        
+        for r in results:
+            # By time of day
+            time = r.get("Time_of_Ride", "Unknown")
+            if time not in by_time:
+                by_time[time] = {"count": 0, "total_revenue": 0}
+            by_time[time]["count"] += 1
+            by_time[time]["total_revenue"] += r.get("Historical_Cost_of_Ride", 0)
+            
+            # By location
+            loc = r.get("Location_Category", "Unknown")
+            if loc not in by_location:
+                by_location[loc] = {"count": 0, "total_revenue": 0}
+            by_location[loc]["count"] += 1
+            by_location[loc]["total_revenue"] += r.get("Historical_Cost_of_Ride", 0)
+            
+            # By pricing model
+            model = r.get("Pricing_Model", "Unknown")
+            if model not in by_model:
+                by_model[model] = {"count": 0, "total_revenue": 0}
+            by_model[model]["count"] += 1
+            by_model[model]["total_revenue"] += r.get("Historical_Cost_of_Ride", 0)
+        
+        # Calculate averages
+        for time in by_time:
+            by_time[time]["avg_revenue"] = round(by_time[time]["total_revenue"] / by_time[time]["count"], 2)
+        for loc in by_location:
+            by_location[loc]["avg_revenue"] = round(by_location[loc]["total_revenue"] / by_location[loc]["count"], 2)
+        for model in by_model:
+            by_model[model]["avg_revenue"] = round(by_model[model]["total_revenue"] / by_model[model]["count"], 2)
+        
+        total_revenue = sum(r.get("Historical_Cost_of_Ride", 0) for r in results)
+        
+        return json.dumps({
+            "total_rides": len(results),
+            "total_revenue": round(total_revenue, 2),
+            "avg_revenue_per_ride": round(total_revenue / len(results), 2) if results else 0,
+            "by_time_of_day": by_time,
+            "by_location": by_location,
+            "by_pricing_model": by_model
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error querying historical data: {str(e)}"})
+
+
+@tool
+def get_upcoming_events(
+    event_type: str = "",
+    location: str = "",
+    limit: int = 20
+) -> str:
+    """
+    Query actual events data from MongoDB (n8n Eventbrite integration).
+    
+    Use this tool to find events that may affect future demand.
+    Events like concerts, sports games, conferences impact ride demand.
+    
+    Args:
+        event_type: Filter by type (e.g., "concert", "sports"). Empty for all.
+        location: Filter by venue/location. Empty for all.
+        limit: Maximum records (default: 20)
+    
+    Returns:
+        str: JSON string with upcoming events that affect demand
+    """
+    try:
+        results = query_events_data(
+            event_type=event_type,
+            location=location,
+            limit=limit
+        )
+        
+        if not results:
+            return json.dumps({"message": "No events found", "events": [], "count": 0})
+        
+        # Format events for forecasting context
+        formatted_events = []
+        for event in results:
+            formatted_events.append({
+                "name": event.get("name") or event.get("title", "Unknown Event"),
+                "date": str(event.get("event_date") or event.get("date", "Unknown")),
+                "venue": event.get("venue") or event.get("location", "Unknown"),
+                "type": event.get("event_type") or event.get("category", "Unknown"),
+                "expected_attendance": event.get("expected_attendance", "Unknown"),
+                "demand_impact": event.get("demand_impact", "High")  # Most events = high impact
+            })
+        
+        return json.dumps({
+            "count": len(formatted_events),
+            "events": formatted_events,
+            "summary": f"Found {len(formatted_events)} events that may affect demand"
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error querying events: {str(e)}"})
+
+
+@tool
+def get_traffic_conditions(
+    location: str = "",
+    limit: int = 20
+) -> str:
+    """
+    Query actual traffic data from MongoDB (n8n Google Maps integration).
+    
+    Use this tool to understand current/recent traffic conditions.
+    Traffic affects ride duration and surge pricing decisions.
+    
+    Args:
+        location: Filter by location. Empty for all.
+        limit: Maximum records (default: 20)
+    
+    Returns:
+        str: JSON string with traffic conditions data
+    """
+    try:
+        results = query_traffic_data(
+            location=location,
+            limit=limit
+        )
+        
+        if not results:
+            return json.dumps({"message": "No traffic data found", "conditions": [], "count": 0})
+        
+        # Format traffic data
+        formatted_traffic = []
+        for t in results:
+            formatted_traffic.append({
+                "location": t.get("location", "Unknown"),
+                "timestamp": str(t.get("timestamp", "Unknown")),
+                "congestion_level": t.get("congestion_level") or t.get("traffic_level", "Unknown"),
+                "average_speed": t.get("average_speed", "Unknown"),
+                "delay_minutes": t.get("delay_minutes") or t.get("delay", 0)
+            })
+        
+        return json.dumps({
+            "count": len(formatted_traffic),
+            "traffic_conditions": formatted_traffic,
+            "summary": f"Traffic data for {len(formatted_traffic)} locations"
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error querying traffic: {str(e)}"})
+
+
+@tool
+def get_industry_news(
+    topic: str = "",
+    limit: int = 10
+) -> str:
+    """
+    Query actual rideshare news from MongoDB (n8n NewsAPI integration).
+    
+    Use this tool to understand industry trends that may affect forecasts.
+    News about competitors, regulations, or market changes impact demand.
+    
+    Args:
+        topic: Filter by topic/keyword. Empty for all.
+        limit: Maximum articles (default: 10)
+    
+    Returns:
+        str: JSON string with industry news
+    """
+    try:
+        results = query_news_data(
+            topic=topic,
+            limit=limit
+        )
+        
+        if not results:
+            return json.dumps({"message": "No news found", "articles": [], "count": 0})
+        
+        # Format news for context
+        formatted_news = []
+        for article in results:
+            formatted_news.append({
+                "title": article.get("title", "No title"),
+                "published": str(article.get("published_at") or article.get("date", "Unknown")),
+                "source": article.get("source", "Unknown"),
+                "summary": (article.get("summary") or article.get("description", ""))[:200]
+            })
+        
+        return json.dumps({
+            "count": len(formatted_news),
+            "articles": formatted_news,
+            "summary": f"Found {len(formatted_news)} relevant industry news articles"
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error querying news: {str(e)}"})
 
 
 @tool
@@ -67,6 +308,319 @@ def query_event_context(query: str, n_results: int = 5) -> str:
         return format_documents_as_context(documents)
     except Exception as e:
         return f"Error querying event context: {str(e)}"
+
+
+@tool
+def generate_multidimensional_forecast(periods: int = 30) -> str:
+    """
+    Generate comprehensive multi-dimensional demand forecasts across all customer segments.
+    
+    This tool generates forecasts for all combinations of:
+    - Customer_Loyalty_Status (Gold, Silver, Regular)
+    - Vehicle_Type (Premium, Economy)
+    - Demand_Profile (HIGH, MEDIUM, LOW)
+    - Pricing_Model (CONTRACTED, STANDARD, CUSTOM)
+    - Location_Category (Urban, Suburban, Rural)
+    
+    Note: Time_of_Ride dimension removed - Demand_Profile already captures time-based patterns.
+    
+    Total possible segments: 3 × 2 × 3 × 3 × 3 = 162 segments
+    
+    For segments with insufficient data (< 3 historical rides), aggregated forecasts are used.
+    
+    Args:
+        periods: Number of days to forecast (30, 60, or 90). Default: 30.
+    
+    Returns:
+        str: JSON string with segmented forecasts and confidence levels
+    """
+    try:
+        from pymongo import MongoClient
+        from app.config import settings
+        import pandas as pd
+        
+        # Connect to MongoDB
+        client = MongoClient(settings.mongodb_url)
+        db = client[settings.mongodb_db_name]
+        hwco_collection = db["historical_rides"]
+        
+        # Define dimensions (Time_of_Ride removed - Demand_Profile captures time patterns)
+        dimensions = {
+            "Customer_Loyalty_Status": ["Gold", "Silver", "Regular"],
+            "Vehicle_Type": ["Premium", "Economy"],
+            "Demand_Profile": ["HIGH", "MEDIUM", "LOW"],
+            "Pricing_Model": ["CONTRACTED", "STANDARD", "CUSTOM"],
+            "Location_Category": ["Urban", "Suburban", "Rural"]
+        }
+        
+        # Query all historical rides
+        all_rides = list(hwco_collection.find({}))
+        
+        if not all_rides:
+            client.close()
+            return json.dumps({"error": "No historical data found", "forecasts": []})
+        
+        segmented_forecasts = []
+        aggregated_forecasts = []
+        total_possible = 3 * 2 * 3 * 3 * 3  # 162 segments (removed Time_of_Ride)
+        
+        # Generate forecasts for each segment combination
+        for loyalty in dimensions["Customer_Loyalty_Status"]:
+            for vehicle in dimensions["Vehicle_Type"]:
+                for demand in dimensions["Demand_Profile"]:
+                    for pricing in dimensions["Pricing_Model"]:
+                        for location in dimensions["Location_Category"]:
+                            # Filter rides for this specific segment (Time_of_Ride removed)
+                            # Handle case-insensitive matching for Demand_Profile
+                            segment_rides = [
+                                r for r in all_rides
+                                if r.get("Customer_Loyalty_Status") == loyalty
+                                and r.get("Vehicle_Type") == vehicle
+                                and (r.get("Demand_Profile", "").upper() == demand.upper() or 
+                                     r.get("Demand_Profile", "").lower() == demand.lower())
+                                and r.get("Pricing_Model") == pricing
+                                and r.get("Location_Category") == location
+                            ]
+                            
+                            ride_count = len(segment_rides)
+                            
+                            if ride_count >= 3:
+                                # Sufficient data for segment-specific forecast
+                                # Build segment dimensions
+                                segment_dims = {
+                                    "loyalty_tier": loyalty,
+                                    "vehicle_type": vehicle,
+                                    "demand_profile": demand,
+                                    "pricing_model": pricing,
+                                    "location": location
+                                }
+                                
+                                # Calculate historical average (for baseline comparison)
+                                avg_price = sum(r.get("Historical_Cost_of_Ride", 0) for r in segment_rides) / ride_count
+                                total_revenue = sum(r.get("Historical_Cost_of_Ride", 0) for r in segment_rides)
+                                
+                                # Use forecasting helpers (extensible to Prophet ML)
+                                try:
+                                    # Forecast demand using helper function (method='simple', future: 'prophet')
+                                    demand_forecast = forecast_demand_for_segment(
+                                        segment_dims,
+                                        segment_rides,
+                                        periods=periods,
+                                        method='simple'  # Change to 'prophet' when Prophet ML is added
+                                    )
+                                    
+                                    # Forecast price using PricingEngine (method='pricing_engine', future: 'prophet')
+                                    price_forecast = forecast_price_for_segment(
+                                        segment_dims,
+                                        segment_rides,
+                                        periods=periods,
+                                        method='pricing_engine',  # Change to 'prophet' when Prophet ML is added
+                                        pricing_engine=pricing_engine
+                                    )
+                                    
+                                    # Calculate revenue forecast
+                                    revenue_forecast = calculate_revenue_forecast(
+                                        demand_forecast,
+                                        price_forecast,
+                                        periods=periods
+                                    )
+                                    
+                                    # Prepare historical data for future Prophet ML (not used now, but ready)
+                                    prophet_data_demand = prepare_historical_data_for_prophet(
+                                        segment_dims,
+                                        segment_rides,
+                                        data_type='demand'
+                                    )
+                                    prophet_data_price = prepare_historical_data_for_prophet(
+                                        segment_dims,
+                                        segment_rides,
+                                        data_type='price'
+                                    )
+                                    
+                                    # Use PricingEngine price (or fallback to historical average)
+                                    pricing_engine_price = price_forecast.get("predicted_price_30d", avg_price)
+                                    
+                                except Exception as e:
+                                    logger.warning(f"Error using forecasting helpers for segment {segment_dims}, falling back to simple: {e}")
+                                    # Fallback to simple calculation
+                                    growth_rate = 0.015 if demand == "HIGH" else 0.01 if demand == "MEDIUM" else 0.005
+                                    forecast_30d = ride_count * (1 + growth_rate * 1)
+                                    forecast_60d = ride_count * (1 + growth_rate * 2)
+                                    forecast_90d = ride_count * (1 + growth_rate * 3)
+                                    demand_forecast = {
+                                        "predicted_rides_30d": forecast_30d,
+                                        "predicted_rides_60d": forecast_60d,
+                                        "predicted_rides_90d": forecast_90d,
+                                        "confidence": "high" if ride_count >= 10 else "medium",
+                                        "method": "simple_fallback"
+                                    }
+                                    revenue_forecast = {
+                                        "predicted_revenue_30d": forecast_30d * avg_price,
+                                        "predicted_revenue_60d": forecast_60d * avg_price,
+                                        "predicted_revenue_90d": forecast_90d * avg_price
+                                    }
+                                    pricing_engine_price = avg_price
+                                
+                                confidence = demand_forecast.get("confidence", "medium")
+                                
+                                segmented_forecasts.append({
+                                    "dimensions": segment_dims,
+                                    "baseline_metrics": {
+                                        "historical_ride_count": ride_count,
+                                        "avg_price": round(avg_price, 2),  # Historical average for comparison
+                                        "pricing_engine_price": round(pricing_engine_price, 2),  # PricingEngine calculated price
+                                        "total_revenue": round(total_revenue, 2),
+                                        "avg_monthly_demand": round(ride_count / 3, 2)  # Assuming 3 months of data
+                                    },
+                                    "forecast_30d": {
+                                        "predicted_rides": round(demand_forecast.get("predicted_rides_30d", 0), 2),
+                                        "predicted_revenue": round(revenue_forecast.get("predicted_revenue_30d", 0), 2)
+                                    },
+                                    "forecast_60d": {
+                                        "predicted_rides": round(demand_forecast.get("predicted_rides_60d", 0), 2),
+                                        "predicted_revenue": round(revenue_forecast.get("predicted_revenue_60d", 0), 2)
+                                    },
+                                    "forecast_90d": {
+                                        "predicted_rides": round(demand_forecast.get("predicted_rides_90d", 0), 2),
+                                        "predicted_revenue": round(revenue_forecast.get("predicted_revenue_90d", 0), 2)
+                                    },
+                                    "confidence": confidence,
+                                    "data_quality": "sufficient",
+                                    "forecast_method": demand_forecast.get("method", "simple")  # Track method used
+                                })
+                            
+                            elif ride_count > 0:
+                                # Sparse data - use aggregated forecast
+                                # Aggregate to broader segment (location + vehicle only)
+                                aggregated_rides = [
+                                    r for r in all_rides
+                                    if r.get("Location_Category") == location
+                                    and r.get("Vehicle_Type") == vehicle
+                                ]
+                                
+                                if len(aggregated_rides) >= 3:
+                                    agg_count = len(aggregated_rides)
+                                    avg_price = sum(r.get("Historical_Cost_of_Ride", 0) for r in aggregated_rides) / agg_count
+                                    
+                                    # Build segment dimensions for aggregated forecast
+                                    segment_dims = {
+                                        "loyalty_tier": loyalty,
+                                        "vehicle_type": vehicle,
+                                        "demand_profile": demand,
+                                        "pricing_model": pricing,
+                                        "location": location
+                                    }
+                                    
+                                    # Use forecasting helpers with aggregated data
+                                    try:
+                                        demand_forecast = forecast_demand_for_segment(
+                                            segment_dims,
+                                            aggregated_rides,  # Use aggregated rides
+                                            periods=periods,
+                                            method='simple'
+                                        )
+                                        
+                                        price_forecast = forecast_price_for_segment(
+                                            segment_dims,
+                                            aggregated_rides,  # Use aggregated rides
+                                            periods=periods,
+                                            method='pricing_engine',
+                                            pricing_engine=pricing_engine
+                                        )
+                                        
+                                        revenue_forecast = calculate_revenue_forecast(
+                                            demand_forecast,
+                                            price_forecast,
+                                            periods=periods
+                                        )
+                                        
+                                        # Scale down based on segment proportion
+                                        proportion = ride_count / agg_count if agg_count > 0 else 0.1
+                                        
+                                        forecast_30d = demand_forecast.get("predicted_rides_30d", 0) * proportion
+                                        forecast_60d = demand_forecast.get("predicted_rides_60d", 0) * proportion
+                                        forecast_90d = demand_forecast.get("predicted_rides_90d", 0) * proportion
+                                        
+                                        pricing_engine_price = price_forecast.get("predicted_price_30d", avg_price)
+                                        
+                                    except Exception as e:
+                                        logger.warning(f"Error using forecasting helpers for aggregated segment, falling back: {e}")
+                                        # Fallback to simple calculation
+                                        proportion = ride_count / agg_count if agg_count > 0 else 0.1
+                                        forecast_30d = agg_count * proportion * 1.01
+                                        forecast_60d = agg_count * proportion * 1.02
+                                        forecast_90d = agg_count * proportion * 1.03
+                                        revenue_forecast = {
+                                            "predicted_revenue_30d": forecast_30d * avg_price,
+                                            "predicted_revenue_60d": forecast_60d * avg_price,
+                                            "predicted_revenue_90d": forecast_90d * avg_price
+                                        }
+                                        pricing_engine_price = avg_price
+                                    
+                                    aggregated_forecasts.append({
+                                        "dimensions": segment_dims,
+                                        "baseline_metrics": {
+                                            "historical_ride_count": ride_count,
+                                            "aggregated_from_count": agg_count,
+                                            "avg_price": round(avg_price, 2),
+                                            "pricing_engine_price": round(pricing_engine_price, 2),
+                                            "proportion": round(proportion, 3)
+                                        },
+                                        "forecast_30d": {
+                                            "predicted_rides": round(forecast_30d, 2),
+                                            "predicted_revenue": round(revenue_forecast.get("predicted_revenue_30d", forecast_30d * avg_price), 2)
+                                        },
+                                        "forecast_60d": {
+                                            "predicted_rides": round(forecast_60d, 2),
+                                            "predicted_revenue": round(revenue_forecast.get("predicted_revenue_60d", forecast_60d * avg_price), 2)
+                                        },
+                                        "forecast_90d": {
+                                            "predicted_rides": round(forecast_90d, 2),
+                                            "predicted_revenue": round(revenue_forecast.get("predicted_revenue_90d", forecast_90d * avg_price), 2)
+                                        },
+                                        "confidence": "low",
+                                        "data_quality": "aggregated",
+                                        "forecast_method": "simple_aggregated"
+                                    })
+        
+        client.close()
+        
+        # Calculate summary statistics
+        total_forecasts = len(segmented_forecasts) + len(aggregated_forecasts)
+        confidence_distribution = {
+            "high": sum(1 for f in segmented_forecasts if f["confidence"] == "high"),
+            "medium": sum(1 for f in segmented_forecasts if f["confidence"] == "medium"),
+            "low": len(aggregated_forecasts)
+        }
+        
+        # Calculate totals
+        total_baseline_revenue = sum(f["baseline_metrics"]["total_revenue"] for f in segmented_forecasts)
+        total_30d_revenue = sum(f["forecast_30d"]["predicted_revenue"] for f in segmented_forecasts + aggregated_forecasts)
+        total_60d_revenue = sum(f["forecast_60d"]["predicted_revenue"] for f in segmented_forecasts + aggregated_forecasts)
+        total_90d_revenue = sum(f["forecast_90d"]["predicted_revenue"] for f in segmented_forecasts + aggregated_forecasts)
+        
+        result = {
+            "summary": {
+                "total_possible_segments": total_possible,
+                "forecasted_segments": len(segmented_forecasts),
+                "aggregated_segments": len(aggregated_forecasts),
+                "total_forecasts": total_forecasts,
+                "confidence_distribution": confidence_distribution,
+                "total_baseline_revenue": round(total_baseline_revenue, 2),
+                "total_30d_forecast_revenue": round(total_30d_revenue, 2),
+                "total_60d_forecast_revenue": round(total_60d_revenue, 2),
+                "total_90d_forecast_revenue": round(total_90d_revenue, 2),
+                "revenue_growth_30d_pct": round((total_30d_revenue - total_baseline_revenue) / total_baseline_revenue * 100, 2) if total_baseline_revenue > 0 else 0
+            },
+            "segmented_forecasts": segmented_forecasts[:50],  # Limit to top 50 for response size
+            "aggregated_forecasts": aggregated_forecasts[:20],  # Limit to top 20
+            "note": "Full forecast data stored in MongoDB pipeline_results collection"
+        }
+        
+        return json.dumps(result)
+        
+    except Exception as e:
+        return json.dumps({"error": f"Error generating multi-dimensional forecast: {str(e)}"})
 
 
 @tool
@@ -308,7 +862,16 @@ try:
     forecasting_agent = create_agent(
         model="openai:gpt-4o-mini",
         tools=[
+            # Multi-dimensional forecasting (NEW)
+            generate_multidimensional_forecast,
+            # MongoDB direct query tools (for ACTUAL data)
+            get_historical_demand_data,
+            get_upcoming_events,
+            get_traffic_conditions,
+            get_industry_news,
+            # ChromaDB RAG tools (for similar scenarios)
             query_event_context,
+            # ML forecasting tools
             generate_prophet_forecast,
             explain_forecast
         ],
@@ -317,26 +880,44 @@ try:
             "Your role is to predict future demand, analyze trends, "
             "and provide accurate forecasts using Prophet ML models and external data. "
             "\n\n"
+            "IMPORTANT TOOL SELECTION: "
+            "- For MULTI-DIMENSIONAL forecasts: use generate_multidimensional_forecast (648 segments) "
+            "- For ACTUAL historical demand patterns: use get_historical_demand_data "
+            "- For ACTUAL upcoming events: use get_upcoming_events "
+            "- For ACTUAL traffic conditions: use get_traffic_conditions "
+            "- For ACTUAL industry news: use get_industry_news "
+            "- For RAG-based event search: use query_event_context "
+            "- For single pricing model ML forecasts: use generate_prophet_forecast "
+            "- For explanations: use explain_forecast "
+            "\n\n"
             "Key responsibilities: "
+            "- Generate multi-dimensional forecasts across ALL customer segments "
             "- Generate 30/60/90-day demand forecasts using Prophet ML "
-            "- Analyze n8n ingested data (events, traffic) for context "
+            "- Query ACTUAL data from MongoDB (events, traffic, news) "
             "- Explain forecasts in natural language using OpenAI GPT-4 "
             "- Provide confidence intervals and trend analysis "
             "\n\n"
             "When generating forecasts: "
-            "- Use generate_prophet_forecast for Prophet ML predictions "
-            "- Query event_context to understand external factors (events, traffic) "
-            "  (returns context_string, events_detected, traffic_patterns) "
-            "- Use explain_forecast to provide natural language explanations via OpenAI GPT-4 "
-            "- Combine Prophet predictions with event context for comprehensive forecasts "
+            "1. For comprehensive analysis: use generate_multidimensional_forecast "
+            "2. First query actual data: get_upcoming_events, get_traffic_conditions "
+            "3. Use get_historical_demand_data to understand past patterns "
+            "4. Use generate_prophet_forecast for specific pricing model ML predictions "
+            "5. Use explain_forecast to provide natural language explanations "
+            "6. Combine all data sources for comprehensive forecasts "
+            "\n\n"
+            "Multi-dimensional forecasts provide: "
+            "- 648 unique segment combinations "
+            "- Confidence levels (high/medium/low) based on data availability "
+            "- Separate forecasts for sparse segments using aggregation "
+            "- Baseline metrics and growth projections "
             "\n\n"
             "Return format should include: "
             "- forecast: List of forecast points with predicted_demand, confidence intervals "
             "- explanation: Natural language explanation from OpenAI GPT-4 "
-            "- method: 'prophet_ml' "
-            "- context: {events_detected, traffic_patterns} from n8n data "
+            "- method: 'prophet_ml' or 'multi_dimensional' "
+            "- context: {events_detected, traffic_patterns} from actual MongoDB data "
             "\n\n"
-            "Always explain how external events (from n8n) might affect the forecast."
+            "Always include ACTUAL data from MongoDB in your analysis, not just RAG results."
         ),
         name="forecasting_agent"
     )

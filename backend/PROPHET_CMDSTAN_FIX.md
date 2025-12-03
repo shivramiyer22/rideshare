@@ -68,3 +68,4 @@ The symlink solution tells Prophet "look here for CmdStan" while pointing to the
 
 **Date Fixed:** December 2, 2025  
 **Status:** ✅ RESOLVED
+

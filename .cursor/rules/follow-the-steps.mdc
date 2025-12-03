@@ -19,7 +19,7 @@ You will be supplied a step-by-step guide for execution. You must contain these 
 7. Always create all testing artifacts like test scripts & a single README_testing.md file in the folder called "tests" in both the backend and frontend folders. Do not create test results or test summary files for storage unless explicitly requested to do so.
 8. After every major update, always generate test scripts to test the latest functionality and execute those tests to confirm 100% pass rate. 
 
-# 8. Once a step has been completed run a `git add .` AND  follow up with a `git commit -m "step: N has been completed which was ..."`, making sure to complete the rest of the message based on the step we're on. 
+# 8. Once a step has been completed DO NOT run a `git add .` AND  follow up with a `git commit -m "step: N has been completed which was ..."`, making sure to complete the rest of the message based on the step we're on. 
 
 # DO NOT DOs
 1. Overcomplicate the code or explanations, keep everything concise and poingant.
@@ -27,6 +27,7 @@ You will be supplied a step-by-step guide for execution. You must contain these 
 3. ATTEMPT TO LOAD THE API KEY AS IT SHOULD BE ALREADY IN THE ENVIRONMENT VARIABLES, don't print don't look at, don't do anything with the API_KEY that could risk it leaking to the model.
 4. DO NOT make multiple files per guide, have one code file to execute per guide.
 5. NEVER print or read any sensitive environments variables at any point to the terminal or within the code itself.
+6. Do not perform git add, git commit, git push unless explicitly requested to do so.
 
 # Target Audience
 Junior Developers learning technology for the first time, repeating some definitions & explanations with analogies is always a plus. 
