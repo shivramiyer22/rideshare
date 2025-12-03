@@ -730,11 +730,6 @@ class AgentPipeline:
             except Exception as e:
                 logger.error(f"    Rules generation failed: {e}")
                 return {"success": False, "error": str(e)}
-                    "explanations": explanations,
-                    "summary_explanation": summary_explanation,
-                    "generated_at": datetime.utcnow().isoformat()
-                }
-            }
             
         except Exception as e:
             logger.error(f"    Analysis phase error: {e}")
@@ -779,9 +774,18 @@ class AgentPipeline:
             forecasts_data = context.get("forecasting", {}).get("data", {})
             rules_data = context.get("analysis", {}).get("data", {})
             
-            # Convert to JSON strings for the tool
-            forecasts_json = json.dumps(forecasts_data.get("forecasts", {})) if forecasts_data else "{}"
-            rules_json = json.dumps(rules_data.get("pricing_rules", {})) if rules_data else "{}"
+            # Extract the actual forecast and rules structures
+            forecast_result = forecasts_data.get("forecasts", {})
+            if isinstance(forecast_result, dict):
+                forecasts_json = json.dumps(forecast_result)
+            else:
+                forecasts_json = json.dumps(forecasts_data) if forecasts_data else "{}"
+            
+            pricing_rules = rules_data.get("pricing_rules", {})
+            if isinstance(pricing_rules, dict):
+                rules_json = json.dumps(pricing_rules)
+            else:
+                rules_json = json.dumps(rules_data) if rules_data else "{}"
             
             if not forecasts_data or not rules_data:
                 logger.warning("    Missing forecasts or rules data, using empty data")

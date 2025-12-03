@@ -361,32 +361,84 @@ def generate_multidimensional_forecast(periods: int = 30) -> str:
                     for pricing in dimensions["Pricing_Model"]:
                         for location in dimensions["Location_Category"]:
                             # Filter rides for this specific segment (Time_of_Ride removed)
+                            # Handle case-insensitive matching for Demand_Profile
                             segment_rides = [
                                 r for r in all_rides
                                 if r.get("Customer_Loyalty_Status") == loyalty
                                 and r.get("Vehicle_Type") == vehicle
-                                and r.get("Demand_Profile") == demand
+                                and (r.get("Demand_Profile", "").upper() == demand.upper() or 
+                                     r.get("Demand_Profile", "").lower() == demand.lower())
                                 and r.get("Pricing_Model") == pricing
                                 and r.get("Location_Category") == location
                             ]
+                            
+                            ride_count = len(segment_rides)
+                            
+                            if ride_count >= 3:
+                                # Sufficient data for segment-specific forecast
+                                avg_price = sum(r.get("Historical_Cost_of_Ride", 0) for r in segment_rides) / ride_count
+                                total_revenue = sum(r.get("Historical_Cost_of_Ride", 0) for r in segment_rides)
                                 
-                                ride_count = len(segment_rides)
+                                # Simple growth projection (can be enhanced with Prophet per segment)
+                                growth_rate = 0.015 if demand == "HIGH" else 0.01 if demand == "MEDIUM" else 0.005
                                 
-                                if ride_count >= 3:
-                                    # Sufficient data for segment-specific forecast
-                                    avg_price = sum(r.get("Historical_Cost_of_Ride", 0) for r in segment_rides) / ride_count
-                                    total_revenue = sum(r.get("Historical_Cost_of_Ride", 0) for r in segment_rides)
+                                forecast_30d = ride_count * (1 + growth_rate * 1)
+                                forecast_60d = ride_count * (1 + growth_rate * 2)
+                                forecast_90d = ride_count * (1 + growth_rate * 3)
+                                
+                                confidence = "high" if ride_count >= 10 else "medium"
+                                
+                                segmented_forecasts.append({
+                                    "dimensions": {
+                                        "loyalty_tier": loyalty,
+                                        "vehicle_type": vehicle,
+                                        "demand_profile": demand,
+                                        "pricing_model": pricing,
+                                        "location": location
+                                    },
+                                    "baseline_metrics": {
+                                        "historical_ride_count": ride_count,
+                                        "avg_price": round(avg_price, 2),
+                                        "total_revenue": round(total_revenue, 2),
+                                        "avg_monthly_demand": round(ride_count / 3, 2)  # Assuming 3 months of data
+                                    },
+                                    "forecast_30d": {
+                                        "predicted_rides": round(forecast_30d, 2),
+                                        "predicted_revenue": round(forecast_30d * avg_price, 2)
+                                    },
+                                    "forecast_60d": {
+                                        "predicted_rides": round(forecast_60d, 2),
+                                        "predicted_revenue": round(forecast_60d * avg_price, 2)
+                                    },
+                                    "forecast_90d": {
+                                        "predicted_rides": round(forecast_90d, 2),
+                                        "predicted_revenue": round(forecast_90d * avg_price, 2)
+                                    },
+                                    "confidence": confidence,
+                                    "data_quality": "sufficient"
+                                })
+                            
+                            elif ride_count > 0:
+                                # Sparse data - use aggregated forecast
+                                # Aggregate to broader segment (location + vehicle only)
+                                aggregated_rides = [
+                                    r for r in all_rides
+                                    if r.get("Location_Category") == location
+                                    and r.get("Vehicle_Type") == vehicle
+                                ]
+                                
+                                if len(aggregated_rides) >= 3:
+                                    agg_count = len(aggregated_rides)
+                                    avg_price = sum(r.get("Historical_Cost_of_Ride", 0) for r in aggregated_rides) / agg_count
                                     
-                                    # Simple growth projection (can be enhanced with Prophet per segment)
-                                    growth_rate = 0.015 if demand == "HIGH" else 0.01 if demand == "MEDIUM" else 0.005
+                                    # Scale down based on segment proportion
+                                    proportion = ride_count / agg_count if agg_count > 0 else 0.1
                                     
-                                    forecast_30d = ride_count * (1 + growth_rate * 1)
-                                    forecast_60d = ride_count * (1 + growth_rate * 2)
-                                    forecast_90d = ride_count * (1 + growth_rate * 3)
+                                    forecast_30d = agg_count * proportion * 1.01
+                                    forecast_60d = agg_count * proportion * 1.02
+                                    forecast_90d = agg_count * proportion * 1.03
                                     
-                                    confidence = "high" if ride_count >= 10 else "medium"
-                                    
-                                    segmented_forecasts.append({
+                                    aggregated_forecasts.append({
                                         "dimensions": {
                                             "loyalty_tier": loyalty,
                                             "vehicle_type": vehicle,
@@ -396,9 +448,9 @@ def generate_multidimensional_forecast(periods: int = 30) -> str:
                                         },
                                         "baseline_metrics": {
                                             "historical_ride_count": ride_count,
+                                            "aggregated_from_count": agg_count,
                                             "avg_price": round(avg_price, 2),
-                                            "total_revenue": round(total_revenue, 2),
-                                            "avg_monthly_demand": round(ride_count / 3, 2)  # Assuming 3 months of data
+                                            "proportion": round(proportion, 3)
                                         },
                                         "forecast_30d": {
                                             "predicted_rides": round(forecast_30d, 2),
@@ -412,59 +464,9 @@ def generate_multidimensional_forecast(periods: int = 30) -> str:
                                             "predicted_rides": round(forecast_90d, 2),
                                             "predicted_revenue": round(forecast_90d * avg_price, 2)
                                         },
-                                        "confidence": confidence,
-                                        "data_quality": "sufficient"
+                                        "confidence": "low",
+                                        "data_quality": "aggregated"
                                     })
-                                
-                                elif ride_count > 0:
-                                    # Sparse data - use aggregated forecast
-                                    # Aggregate to broader segment (location + vehicle only)
-                                    aggregated_rides = [
-                                        r for r in all_rides
-                                        if r.get("Location_Category") == location
-                                        and r.get("Vehicle_Type") == vehicle
-                                    ]
-                                    
-                                    if len(aggregated_rides) >= 3:
-                                        agg_count = len(aggregated_rides)
-                                        avg_price = sum(r.get("Historical_Cost_of_Ride", 0) for r in aggregated_rides) / agg_count
-                                        
-                                        # Scale down based on segment proportion
-                                        proportion = ride_count / agg_count if agg_count > 0 else 0.1
-                                        
-                                        forecast_30d = agg_count * proportion * 1.01
-                                        forecast_60d = agg_count * proportion * 1.02
-                                        forecast_90d = agg_count * proportion * 1.03
-                                        
-                                        aggregated_forecasts.append({
-                                            "dimensions": {
-                                                "loyalty_tier": loyalty,
-                                                "vehicle_type": vehicle,
-                                                "demand_profile": demand,
-                                                "pricing_model": pricing,
-                                                "location": location
-                                            },
-                                            "baseline_metrics": {
-                                                "historical_ride_count": ride_count,
-                                                "aggregated_from_count": agg_count,
-                                                "avg_price": round(avg_price, 2),
-                                                "proportion": round(proportion, 3)
-                                            },
-                                            "forecast_30d": {
-                                                "predicted_rides": round(forecast_30d, 2),
-                                                "predicted_revenue": round(forecast_30d * avg_price, 2)
-                                            },
-                                            "forecast_60d": {
-                                                "predicted_rides": round(forecast_60d, 2),
-                                                "predicted_revenue": round(forecast_60d * avg_price, 2)
-                                            },
-                                            "forecast_90d": {
-                                                "predicted_rides": round(forecast_90d, 2),
-                                                "predicted_revenue": round(forecast_90d * avg_price, 2)
-                                            },
-                                            "confidence": "low",
-                                            "data_quality": "aggregated"
-                                        })
         
         client.close()
         
