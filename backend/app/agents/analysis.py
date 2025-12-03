@@ -1543,6 +1543,175 @@ def _generate_external_data_explanation(
 
 
 @tool
+def get_combined_pricing_rules() -> str:
+    """
+    Get combined pricing rules from MongoDB pricing_strategies collection and newly generated rules.
+    
+    This tool combines:
+    1. Existing rules from pricing_strategies MongoDB collection
+    2. Rules from ChromaDB strategy_knowledge_vectors  
+    3. Newly generated rules from current data analysis
+    
+    Returns merged, deduplicated pricing rules for recommendation analysis.
+    
+    Returns:
+        str: JSON string with combined pricing rules
+    """
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        
+        try:
+            # 1. Load existing rules from MongoDB pricing_strategies
+            strategies_collection = db["pricing_strategies"]
+            existing_rules = list(strategies_collection.find({}))
+            
+            # Extract rules from nested structure
+            mongodb_rules = []
+            for strategy in existing_rules:
+                if "pricing_rules" in strategy and isinstance(strategy["pricing_rules"], dict):
+                    # Handle nested structure from dynamic_pricing_rules.json
+                    for category, rules_list in strategy["pricing_rules"].items():
+                        if isinstance(rules_list, list):
+                            for rule in rules_list:
+                                rule_copy = rule.copy()
+                                rule_copy["source"] = "mongodb"
+                                rule_copy["category"] = category
+                                mongodb_rules.append(rule_copy)
+            
+            # 2. Query ChromaDB for strategy knowledge
+            chromadb_rules = []
+            try:
+                strategy_docs = query_chromadb("strategy_knowledge_vectors", "pricing rules location time loyalty", n_results=20)
+                for doc in strategy_docs:
+                    if "content" in doc:
+                        # Extract rule-like information from content
+                        content = doc["content"]
+                        if "multiplier" in content.lower() or "surge" in content.lower():
+                            chromadb_rules.append({
+                                "source": "chromadb",
+                                "content": content[:200],
+                                "mongodb_id": doc.get("mongodb_id", "")
+                            })
+            except:
+                pass  # ChromaDB query failed, continue with MongoDB rules only
+            
+            # 3. Generate new rules from current data patterns
+            hwco_collection = db["historical_rides"]
+            competitor_collection = db["competitor_prices"]
+            
+            # Analyze current patterns for new rules
+            hwco_data = list(hwco_collection.find({}).limit(500))
+            competitor_data = list(competitor_collection.find({}).limit(500))
+            
+            generated_rules = []
+            
+            # Analyze loyalty tier patterns
+            loyalty_stats = {}
+            for ride in hwco_data:
+                loyalty = ride.get("Customer_Loyalty_Status", "Unknown")
+                ride_count = loyalty_stats.get(loyalty, {"count": 0, "total_price": 0})
+                ride_count["count"] += 1
+                ride_count["total_price"] += ride.get("Historical_Cost_of_Ride", 0)
+                loyalty_stats[loyalty] = ride_count
+            
+            # Generate loyalty-based rules
+            for loyalty, stats in loyalty_stats.items():
+                if stats["count"] >= 25:
+                    avg_price = stats["total_price"] / stats["count"]
+                    generated_rules.append({
+                        "rule_id": f"GEN_LOYAL_{loyalty.upper()}",
+                        "name": f"{loyalty} Tier Pricing Pattern",
+                        "description": f"Detected pattern for {loyalty} customers ({stats['count']} rides)",
+                        "category": "loyalty_based",
+                        "condition": {"loyalty_tier": loyalty},
+                        "current_avg_price": round(avg_price, 2),
+                        "ride_count": stats["count"],
+                        "source": "generated",
+                        "confidence": "high" if stats["count"] >= 50 else "medium"
+                    })
+            
+            # Analyze demand profile patterns
+            demand_stats = {}
+            for ride in hwco_data:
+                demand = ride.get("Demand_Profile", "Unknown")
+                demand_count = demand_stats.get(demand, {"count": 0, "total_price": 0})
+                demand_count["count"] += 1
+                demand_count["total_price"] += ride.get("Historical_Cost_of_Ride", 0)
+                demand_stats[demand] = demand_count
+            
+            # Generate demand-based rules
+            for demand, stats in demand_stats.items():
+                if stats["count"] >= 20:
+                    avg_price = stats["total_price"] / stats["count"]
+                    generated_rules.append({
+                        "rule_id": f"GEN_DEMAND_{demand}",
+                        "name": f"{demand} Demand Pricing",
+                        "description": f"Detected {demand} demand pattern ({stats['count']} rides)",
+                        "category": "demand_based",
+                        "condition": {"demand_profile": demand},
+                        "current_avg_price": round(avg_price, 2),
+                        "ride_count": stats["count"],
+                        "source": "generated",
+                        "confidence": "high" if stats["count"] >= 50 else "medium"
+                    })
+            
+        finally:
+            client.close()
+        
+        # 4. Merge and deduplicate
+        all_rules = mongodb_rules + generated_rules
+        
+        # Deduplicate by rule_id (prefer mongodb over generated)
+        seen_ids = set()
+        combined_rules = []
+        
+        # First add MongoDB rules
+        for rule in mongodb_rules:
+            rule_id = rule.get("rule_id", "")
+            if rule_id and rule_id not in seen_ids:
+                combined_rules.append(rule)
+                seen_ids.add(rule_id)
+        
+        # Then add generated rules if not duplicate
+        for rule in generated_rules:
+            rule_id = rule.get("rule_id", "")
+            if rule_id and rule_id not in seen_ids:
+                combined_rules.append(rule)
+                seen_ids.add(rule_id)
+        
+        # Categorize rules
+        by_category = {
+            "location_based": [],
+            "time_based": [],
+            "loyalty_based": [],
+            "demand_based": [],
+            "other": []
+        }
+        
+        for rule in combined_rules:
+            category = rule.get("category", "other")
+            by_category.get(category, by_category["other"]).append(rule)
+        
+        result = {
+            "summary": {
+                "total_rules": len(combined_rules),
+                "mongodb_rules": len(mongodb_rules),
+                "chromadb_context": len(chromadb_rules),
+                "generated_rules": len(generated_rules),
+                "by_category": {k: len(v) for k, v in by_category.items()}
+            },
+            "combined_rules": combined_rules,
+            "by_category": by_category
+        }
+        
+        return json.dumps(result)
+        
+    except Exception as e:
+        return json.dumps({"error": f"Error combining pricing rules: {str(e)}", "combined_rules": []})
+
+
+@tool
 def generate_pricing_rules_for_pipeline() -> str:
     """
     Generate dynamic pricing rules based on latest data analysis.

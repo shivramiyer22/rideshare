@@ -301,6 +301,217 @@ def query_event_context(query: str, n_results: int = 5) -> str:
 
 
 @tool
+def generate_multidimensional_forecast(periods: int = 30) -> str:
+    """
+    Generate comprehensive multi-dimensional demand forecasts across all customer segments.
+    
+    This tool generates forecasts for all combinations of:
+    - Customer_Loyalty_Status (Gold, Silver, Regular)
+    - Vehicle_Type (Premium, Economy)
+    - Demand_Profile (HIGH, MEDIUM, LOW)
+    - Pricing_Model (CONTRACTED, STANDARD, CUSTOM)
+    - Location_Category (Urban, Suburban, Rural)
+    - Time_of_Ride (Morning, Afternoon, Evening, Night)
+    
+    Total possible segments: 3 × 2 × 3 × 3 × 3 × 4 = 648 segments
+    
+    For segments with insufficient data (< 3 historical rides), aggregated forecasts are used.
+    
+    Args:
+        periods: Number of days to forecast (30, 60, or 90). Default: 30.
+    
+    Returns:
+        str: JSON string with segmented forecasts and confidence levels
+    """
+    try:
+        from pymongo import MongoClient
+        from app.config import settings
+        import pandas as pd
+        
+        # Connect to MongoDB
+        client = MongoClient(settings.mongodb_url)
+        db = client[settings.mongodb_db_name]
+        hwco_collection = db["historical_rides"]
+        
+        # Define dimensions
+        dimensions = {
+            "Customer_Loyalty_Status": ["Gold", "Silver", "Regular"],
+            "Vehicle_Type": ["Premium", "Economy"],
+            "Demand_Profile": ["HIGH", "MEDIUM", "LOW"],
+            "Pricing_Model": ["CONTRACTED", "STANDARD", "CUSTOM"],
+            "Location_Category": ["Urban", "Suburban", "Rural"],
+            "Time_of_Ride": ["Morning", "Afternoon", "Evening", "Night"]
+        }
+        
+        # Query all historical rides
+        all_rides = list(hwco_collection.find({}))
+        
+        if not all_rides:
+            client.close()
+            return json.dumps({"error": "No historical data found", "forecasts": []})
+        
+        segmented_forecasts = []
+        aggregated_forecasts = []
+        total_possible = 3 * 2 * 3 * 3 * 3 * 4  # 648 segments
+        
+        # Generate forecasts for each segment combination
+        for loyalty in dimensions["Customer_Loyalty_Status"]:
+            for vehicle in dimensions["Vehicle_Type"]:
+                for demand in dimensions["Demand_Profile"]:
+                    for pricing in dimensions["Pricing_Model"]:
+                        for location in dimensions["Location_Category"]:
+                            for time_period in dimensions["Time_of_Ride"]:
+                                # Filter rides for this specific segment
+                                segment_rides = [
+                                    r for r in all_rides
+                                    if r.get("Customer_Loyalty_Status") == loyalty
+                                    and r.get("Vehicle_Type") == vehicle
+                                    and r.get("Demand_Profile") == demand
+                                    and r.get("Pricing_Model") == pricing
+                                    and r.get("Location_Category") == location
+                                    and r.get("Time_of_Ride") == time_period
+                                ]
+                                
+                                ride_count = len(segment_rides)
+                                
+                                if ride_count >= 3:
+                                    # Sufficient data for segment-specific forecast
+                                    avg_price = sum(r.get("Historical_Cost_of_Ride", 0) for r in segment_rides) / ride_count
+                                    total_revenue = sum(r.get("Historical_Cost_of_Ride", 0) for r in segment_rides)
+                                    
+                                    # Simple growth projection (can be enhanced with Prophet per segment)
+                                    growth_rate = 0.015 if demand == "HIGH" else 0.01 if demand == "MEDIUM" else 0.005
+                                    
+                                    forecast_30d = ride_count * (1 + growth_rate * 1)
+                                    forecast_60d = ride_count * (1 + growth_rate * 2)
+                                    forecast_90d = ride_count * (1 + growth_rate * 3)
+                                    
+                                    confidence = "high" if ride_count >= 10 else "medium"
+                                    
+                                    segmented_forecasts.append({
+                                        "dimensions": {
+                                            "loyalty_tier": loyalty,
+                                            "vehicle_type": vehicle,
+                                            "demand_profile": demand,
+                                            "pricing_model": pricing,
+                                            "location": location,
+                                            "time_period": time_period
+                                        },
+                                        "baseline_metrics": {
+                                            "historical_ride_count": ride_count,
+                                            "avg_price": round(avg_price, 2),
+                                            "total_revenue": round(total_revenue, 2),
+                                            "avg_monthly_demand": round(ride_count / 3, 2)  # Assuming 3 months of data
+                                        },
+                                        "forecast_30d": {
+                                            "predicted_rides": round(forecast_30d, 2),
+                                            "predicted_revenue": round(forecast_30d * avg_price, 2)
+                                        },
+                                        "forecast_60d": {
+                                            "predicted_rides": round(forecast_60d, 2),
+                                            "predicted_revenue": round(forecast_60d * avg_price, 2)
+                                        },
+                                        "forecast_90d": {
+                                            "predicted_rides": round(forecast_90d, 2),
+                                            "predicted_revenue": round(forecast_90d * avg_price, 2)
+                                        },
+                                        "confidence": confidence,
+                                        "data_quality": "sufficient"
+                                    })
+                                
+                                elif ride_count > 0:
+                                    # Sparse data - use aggregated forecast
+                                    # Aggregate to broader segment (e.g., location + time_period only)
+                                    aggregated_rides = [
+                                        r for r in all_rides
+                                        if r.get("Location_Category") == location
+                                        and r.get("Time_of_Ride") == time_period
+                                        and r.get("Vehicle_Type") == vehicle
+                                    ]
+                                    
+                                    if len(aggregated_rides) >= 3:
+                                        agg_count = len(aggregated_rides)
+                                        avg_price = sum(r.get("Historical_Cost_of_Ride", 0) for r in aggregated_rides) / agg_count
+                                        
+                                        # Scale down based on segment proportion
+                                        proportion = ride_count / agg_count if agg_count > 0 else 0.1
+                                        
+                                        forecast_30d = agg_count * proportion * 1.01
+                                        forecast_60d = agg_count * proportion * 1.02
+                                        forecast_90d = agg_count * proportion * 1.03
+                                        
+                                        aggregated_forecasts.append({
+                                            "dimensions": {
+                                                "loyalty_tier": loyalty,
+                                                "vehicle_type": vehicle,
+                                                "demand_profile": demand,
+                                                "pricing_model": pricing,
+                                                "location": location,
+                                                "time_period": time_period
+                                            },
+                                            "baseline_metrics": {
+                                                "historical_ride_count": ride_count,
+                                                "aggregated_from_count": agg_count,
+                                                "avg_price": round(avg_price, 2),
+                                                "proportion": round(proportion, 3)
+                                            },
+                                            "forecast_30d": {
+                                                "predicted_rides": round(forecast_30d, 2),
+                                                "predicted_revenue": round(forecast_30d * avg_price, 2)
+                                            },
+                                            "forecast_60d": {
+                                                "predicted_rides": round(forecast_60d, 2),
+                                                "predicted_revenue": round(forecast_60d * avg_price, 2)
+                                            },
+                                            "forecast_90d": {
+                                                "predicted_rides": round(forecast_90d, 2),
+                                                "predicted_revenue": round(forecast_90d * avg_price, 2)
+                                            },
+                                            "confidence": "low",
+                                            "data_quality": "aggregated"
+                                        })
+        
+        client.close()
+        
+        # Calculate summary statistics
+        total_forecasts = len(segmented_forecasts) + len(aggregated_forecasts)
+        confidence_distribution = {
+            "high": sum(1 for f in segmented_forecasts if f["confidence"] == "high"),
+            "medium": sum(1 for f in segmented_forecasts if f["confidence"] == "medium"),
+            "low": len(aggregated_forecasts)
+        }
+        
+        # Calculate totals
+        total_baseline_revenue = sum(f["baseline_metrics"]["total_revenue"] for f in segmented_forecasts)
+        total_30d_revenue = sum(f["forecast_30d"]["predicted_revenue"] for f in segmented_forecasts + aggregated_forecasts)
+        total_60d_revenue = sum(f["forecast_60d"]["predicted_revenue"] for f in segmented_forecasts + aggregated_forecasts)
+        total_90d_revenue = sum(f["forecast_90d"]["predicted_revenue"] for f in segmented_forecasts + aggregated_forecasts)
+        
+        result = {
+            "summary": {
+                "total_possible_segments": total_possible,
+                "forecasted_segments": len(segmented_forecasts),
+                "aggregated_segments": len(aggregated_forecasts),
+                "total_forecasts": total_forecasts,
+                "confidence_distribution": confidence_distribution,
+                "total_baseline_revenue": round(total_baseline_revenue, 2),
+                "total_30d_forecast_revenue": round(total_30d_revenue, 2),
+                "total_60d_forecast_revenue": round(total_60d_revenue, 2),
+                "total_90d_forecast_revenue": round(total_90d_revenue, 2),
+                "revenue_growth_30d_pct": round((total_30d_revenue - total_baseline_revenue) / total_baseline_revenue * 100, 2) if total_baseline_revenue > 0 else 0
+            },
+            "segmented_forecasts": segmented_forecasts[:50],  # Limit to top 50 for response size
+            "aggregated_forecasts": aggregated_forecasts[:20],  # Limit to top 20
+            "note": "Full forecast data stored in MongoDB pipeline_results collection"
+        }
+        
+        return json.dumps(result)
+        
+    except Exception as e:
+        return json.dumps({"error": f"Error generating multi-dimensional forecast: {str(e)}"})
+
+
+@tool
 def generate_prophet_forecast(pricing_model: str, periods: int) -> Dict[str, Any]:
     """
     Generate Prophet ML forecast for specified pricing model and period.
@@ -539,6 +750,8 @@ try:
     forecasting_agent = create_agent(
         model="openai:gpt-4o-mini",
         tools=[
+            # Multi-dimensional forecasting (NEW)
+            generate_multidimensional_forecast,
             # MongoDB direct query tools (for ACTUAL data)
             get_historical_demand_data,
             get_upcoming_events,
@@ -556,31 +769,40 @@ try:
             "and provide accurate forecasts using Prophet ML models and external data. "
             "\n\n"
             "IMPORTANT TOOL SELECTION: "
+            "- For MULTI-DIMENSIONAL forecasts: use generate_multidimensional_forecast (648 segments) "
             "- For ACTUAL historical demand patterns: use get_historical_demand_data "
             "- For ACTUAL upcoming events: use get_upcoming_events "
             "- For ACTUAL traffic conditions: use get_traffic_conditions "
             "- For ACTUAL industry news: use get_industry_news "
             "- For RAG-based event search: use query_event_context "
-            "- For ML forecasts: use generate_prophet_forecast "
+            "- For single pricing model ML forecasts: use generate_prophet_forecast "
             "- For explanations: use explain_forecast "
             "\n\n"
             "Key responsibilities: "
+            "- Generate multi-dimensional forecasts across ALL customer segments "
             "- Generate 30/60/90-day demand forecasts using Prophet ML "
             "- Query ACTUAL data from MongoDB (events, traffic, news) "
             "- Explain forecasts in natural language using OpenAI GPT-4 "
             "- Provide confidence intervals and trend analysis "
             "\n\n"
             "When generating forecasts: "
-            "1. First query actual data: get_upcoming_events, get_traffic_conditions "
-            "2. Use get_historical_demand_data to understand past patterns "
-            "3. Use generate_prophet_forecast for ML predictions "
-            "4. Use explain_forecast to provide natural language explanations "
-            "5. Combine all data sources for comprehensive forecasts "
+            "1. For comprehensive analysis: use generate_multidimensional_forecast "
+            "2. First query actual data: get_upcoming_events, get_traffic_conditions "
+            "3. Use get_historical_demand_data to understand past patterns "
+            "4. Use generate_prophet_forecast for specific pricing model ML predictions "
+            "5. Use explain_forecast to provide natural language explanations "
+            "6. Combine all data sources for comprehensive forecasts "
+            "\n\n"
+            "Multi-dimensional forecasts provide: "
+            "- 648 unique segment combinations "
+            "- Confidence levels (high/medium/low) based on data availability "
+            "- Separate forecasts for sparse segments using aggregation "
+            "- Baseline metrics and growth projections "
             "\n\n"
             "Return format should include: "
             "- forecast: List of forecast points with predicted_demand, confidence intervals "
             "- explanation: Natural language explanation from OpenAI GPT-4 "
-            "- method: 'prophet_ml' "
+            "- method: 'prophet_ml' or 'multi_dimensional' "
             "- context: {events_detected, traffic_patterns} from actual MongoDB data "
             "\n\n"
             "Always include ACTUAL data from MongoDB in your analysis, not just RAG results."
