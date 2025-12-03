@@ -28,10 +28,20 @@ from app.agents.utils import (
 )
 from app.forecasting_ml import RideshareForecastModel
 from app.config import settings
+from app.pricing_engine import PricingEngine
+from app.agents.forecasting_helpers import (
+    forecast_demand_for_segment,
+    forecast_price_for_segment,
+    calculate_revenue_forecast,
+    prepare_historical_data_for_prophet
+)
 
 
 # Initialize forecasting model instance
 forecast_model = RideshareForecastModel()
+
+# Initialize PricingEngine instance for price calculations
+pricing_engine = PricingEngine()
 
 
 @tool
@@ -376,46 +386,107 @@ def generate_multidimensional_forecast(periods: int = 30) -> str:
                             
                             if ride_count >= 3:
                                 # Sufficient data for segment-specific forecast
+                                # Build segment dimensions
+                                segment_dims = {
+                                    "loyalty_tier": loyalty,
+                                    "vehicle_type": vehicle,
+                                    "demand_profile": demand,
+                                    "pricing_model": pricing,
+                                    "location": location
+                                }
+                                
+                                # Calculate historical average (for baseline comparison)
                                 avg_price = sum(r.get("Historical_Cost_of_Ride", 0) for r in segment_rides) / ride_count
                                 total_revenue = sum(r.get("Historical_Cost_of_Ride", 0) for r in segment_rides)
                                 
-                                # Simple growth projection (can be enhanced with Prophet per segment)
-                                growth_rate = 0.015 if demand == "HIGH" else 0.01 if demand == "MEDIUM" else 0.005
+                                # Use forecasting helpers (extensible to Prophet ML)
+                                try:
+                                    # Forecast demand using helper function (method='simple', future: 'prophet')
+                                    demand_forecast = forecast_demand_for_segment(
+                                        segment_dims,
+                                        segment_rides,
+                                        periods=periods,
+                                        method='simple'  # Change to 'prophet' when Prophet ML is added
+                                    )
+                                    
+                                    # Forecast price using PricingEngine (method='pricing_engine', future: 'prophet')
+                                    price_forecast = forecast_price_for_segment(
+                                        segment_dims,
+                                        segment_rides,
+                                        periods=periods,
+                                        method='pricing_engine',  # Change to 'prophet' when Prophet ML is added
+                                        pricing_engine=pricing_engine
+                                    )
+                                    
+                                    # Calculate revenue forecast
+                                    revenue_forecast = calculate_revenue_forecast(
+                                        demand_forecast,
+                                        price_forecast,
+                                        periods=periods
+                                    )
+                                    
+                                    # Prepare historical data for future Prophet ML (not used now, but ready)
+                                    prophet_data_demand = prepare_historical_data_for_prophet(
+                                        segment_dims,
+                                        segment_rides,
+                                        data_type='demand'
+                                    )
+                                    prophet_data_price = prepare_historical_data_for_prophet(
+                                        segment_dims,
+                                        segment_rides,
+                                        data_type='price'
+                                    )
+                                    
+                                    # Use PricingEngine price (or fallback to historical average)
+                                    pricing_engine_price = price_forecast.get("predicted_price_30d", avg_price)
+                                    
+                                except Exception as e:
+                                    logger.warning(f"Error using forecasting helpers for segment {segment_dims}, falling back to simple: {e}")
+                                    # Fallback to simple calculation
+                                    growth_rate = 0.015 if demand == "HIGH" else 0.01 if demand == "MEDIUM" else 0.005
+                                    forecast_30d = ride_count * (1 + growth_rate * 1)
+                                    forecast_60d = ride_count * (1 + growth_rate * 2)
+                                    forecast_90d = ride_count * (1 + growth_rate * 3)
+                                    demand_forecast = {
+                                        "predicted_rides_30d": forecast_30d,
+                                        "predicted_rides_60d": forecast_60d,
+                                        "predicted_rides_90d": forecast_90d,
+                                        "confidence": "high" if ride_count >= 10 else "medium",
+                                        "method": "simple_fallback"
+                                    }
+                                    revenue_forecast = {
+                                        "predicted_revenue_30d": forecast_30d * avg_price,
+                                        "predicted_revenue_60d": forecast_60d * avg_price,
+                                        "predicted_revenue_90d": forecast_90d * avg_price
+                                    }
+                                    pricing_engine_price = avg_price
                                 
-                                forecast_30d = ride_count * (1 + growth_rate * 1)
-                                forecast_60d = ride_count * (1 + growth_rate * 2)
-                                forecast_90d = ride_count * (1 + growth_rate * 3)
-                                
-                                confidence = "high" if ride_count >= 10 else "medium"
+                                confidence = demand_forecast.get("confidence", "medium")
                                 
                                 segmented_forecasts.append({
-                                    "dimensions": {
-                                        "loyalty_tier": loyalty,
-                                        "vehicle_type": vehicle,
-                                        "demand_profile": demand,
-                                        "pricing_model": pricing,
-                                        "location": location
-                                    },
+                                    "dimensions": segment_dims,
                                     "baseline_metrics": {
                                         "historical_ride_count": ride_count,
-                                        "avg_price": round(avg_price, 2),
+                                        "avg_price": round(avg_price, 2),  # Historical average for comparison
+                                        "pricing_engine_price": round(pricing_engine_price, 2),  # PricingEngine calculated price
                                         "total_revenue": round(total_revenue, 2),
                                         "avg_monthly_demand": round(ride_count / 3, 2)  # Assuming 3 months of data
                                     },
                                     "forecast_30d": {
-                                        "predicted_rides": round(forecast_30d, 2),
-                                        "predicted_revenue": round(forecast_30d * avg_price, 2)
+                                        "predicted_rides": round(demand_forecast.get("predicted_rides_30d", 0), 2),
+                                        "predicted_revenue": round(revenue_forecast.get("predicted_revenue_30d", 0), 2)
                                     },
                                     "forecast_60d": {
-                                        "predicted_rides": round(forecast_60d, 2),
-                                        "predicted_revenue": round(forecast_60d * avg_price, 2)
+                                        "predicted_rides": round(demand_forecast.get("predicted_rides_60d", 0), 2),
+                                        "predicted_revenue": round(revenue_forecast.get("predicted_revenue_60d", 0), 2)
                                     },
                                     "forecast_90d": {
-                                        "predicted_rides": round(forecast_90d, 2),
-                                        "predicted_revenue": round(forecast_90d * avg_price, 2)
+                                        "predicted_rides": round(demand_forecast.get("predicted_rides_90d", 0), 2),
+                                        "predicted_revenue": round(revenue_forecast.get("predicted_revenue_90d", 0), 2)
                                     },
                                     "confidence": confidence,
-                                    "data_quality": "sufficient"
+                                    "data_quality": "sufficient",
+                                    "forecast_method": demand_forecast.get("method", "simple")  # Track method used
                                 })
                             
                             elif ride_count > 0:
@@ -431,41 +502,85 @@ def generate_multidimensional_forecast(periods: int = 30) -> str:
                                     agg_count = len(aggregated_rides)
                                     avg_price = sum(r.get("Historical_Cost_of_Ride", 0) for r in aggregated_rides) / agg_count
                                     
-                                    # Scale down based on segment proportion
-                                    proportion = ride_count / agg_count if agg_count > 0 else 0.1
+                                    # Build segment dimensions for aggregated forecast
+                                    segment_dims = {
+                                        "loyalty_tier": loyalty,
+                                        "vehicle_type": vehicle,
+                                        "demand_profile": demand,
+                                        "pricing_model": pricing,
+                                        "location": location
+                                    }
                                     
-                                    forecast_30d = agg_count * proportion * 1.01
-                                    forecast_60d = agg_count * proportion * 1.02
-                                    forecast_90d = agg_count * proportion * 1.03
+                                    # Use forecasting helpers with aggregated data
+                                    try:
+                                        demand_forecast = forecast_demand_for_segment(
+                                            segment_dims,
+                                            aggregated_rides,  # Use aggregated rides
+                                            periods=periods,
+                                            method='simple'
+                                        )
+                                        
+                                        price_forecast = forecast_price_for_segment(
+                                            segment_dims,
+                                            aggregated_rides,  # Use aggregated rides
+                                            periods=periods,
+                                            method='pricing_engine',
+                                            pricing_engine=pricing_engine
+                                        )
+                                        
+                                        revenue_forecast = calculate_revenue_forecast(
+                                            demand_forecast,
+                                            price_forecast,
+                                            periods=periods
+                                        )
+                                        
+                                        # Scale down based on segment proportion
+                                        proportion = ride_count / agg_count if agg_count > 0 else 0.1
+                                        
+                                        forecast_30d = demand_forecast.get("predicted_rides_30d", 0) * proportion
+                                        forecast_60d = demand_forecast.get("predicted_rides_60d", 0) * proportion
+                                        forecast_90d = demand_forecast.get("predicted_rides_90d", 0) * proportion
+                                        
+                                        pricing_engine_price = price_forecast.get("predicted_price_30d", avg_price)
+                                        
+                                    except Exception as e:
+                                        logger.warning(f"Error using forecasting helpers for aggregated segment, falling back: {e}")
+                                        # Fallback to simple calculation
+                                        proportion = ride_count / agg_count if agg_count > 0 else 0.1
+                                        forecast_30d = agg_count * proportion * 1.01
+                                        forecast_60d = agg_count * proportion * 1.02
+                                        forecast_90d = agg_count * proportion * 1.03
+                                        revenue_forecast = {
+                                            "predicted_revenue_30d": forecast_30d * avg_price,
+                                            "predicted_revenue_60d": forecast_60d * avg_price,
+                                            "predicted_revenue_90d": forecast_90d * avg_price
+                                        }
+                                        pricing_engine_price = avg_price
                                     
                                     aggregated_forecasts.append({
-                                        "dimensions": {
-                                            "loyalty_tier": loyalty,
-                                            "vehicle_type": vehicle,
-                                            "demand_profile": demand,
-                                            "pricing_model": pricing,
-                                            "location": location
-                                        },
+                                        "dimensions": segment_dims,
                                         "baseline_metrics": {
                                             "historical_ride_count": ride_count,
                                             "aggregated_from_count": agg_count,
                                             "avg_price": round(avg_price, 2),
+                                            "pricing_engine_price": round(pricing_engine_price, 2),
                                             "proportion": round(proportion, 3)
                                         },
                                         "forecast_30d": {
                                             "predicted_rides": round(forecast_30d, 2),
-                                            "predicted_revenue": round(forecast_30d * avg_price, 2)
+                                            "predicted_revenue": round(revenue_forecast.get("predicted_revenue_30d", forecast_30d * avg_price), 2)
                                         },
                                         "forecast_60d": {
                                             "predicted_rides": round(forecast_60d, 2),
-                                            "predicted_revenue": round(forecast_60d * avg_price, 2)
+                                            "predicted_revenue": round(revenue_forecast.get("predicted_revenue_60d", forecast_60d * avg_price), 2)
                                         },
                                         "forecast_90d": {
                                             "predicted_rides": round(forecast_90d, 2),
-                                            "predicted_revenue": round(forecast_90d * avg_price, 2)
+                                            "predicted_revenue": round(revenue_forecast.get("predicted_revenue_90d", forecast_90d * avg_price), 2)
                                         },
                                         "confidence": "low",
-                                        "data_quality": "aggregated"
+                                        "data_quality": "aggregated",
+                                        "forecast_method": "simple_aggregated"
                                     })
         
         client.close()

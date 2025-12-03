@@ -28,6 +28,15 @@ from app.agents.utils import (
     query_news_data,
     get_mongodb_collection_stats
 )
+from app.pricing_engine import PricingEngine
+from app.agents.pricing_helpers import (
+    build_order_data_from_segment,
+    apply_pricing_rule_to_order_data,
+    calculate_segment_price_with_engine
+)
+import logging
+
+logger = logging.getLogger(__name__)
 from app.config import settings
 
 
@@ -578,6 +587,9 @@ def generate_strategic_recommendations(forecasts: str, rules: str) -> str:
             
             return elasticity
         
+        # Initialize PricingEngine for rule simulation
+        pricing_engine = PricingEngine()
+        
         # Simulate each rule
         for rule in rules_list:
             rule_id = rule.get("rule_id", "UNKNOWN")
@@ -608,7 +620,26 @@ def generate_strategic_recommendations(forecasts: str, rules: str) -> str:
                     if baseline_price == 0 or baseline_rides == 0:
                         continue
                     
-                    new_price = baseline_price * multiplier
+                    # Use PricingEngine to calculate actual price with rule applied
+                    try:
+                        # Build order_data from segment dimensions
+                        order_data = build_order_data_from_segment(
+                            dimensions,
+                            []  # Empty list - we'll use dimensions only
+                        )
+                        
+                        # Apply pricing rule to order_data
+                        order_data_with_rule = apply_pricing_rule_to_order_data(order_data, rule)
+                        
+                        # Calculate price using PricingEngine
+                        price_result = pricing_engine.calculate_price(order_data_with_rule)
+                        new_price = price_result.get("final_price", baseline_price * multiplier)
+                        
+                    except Exception as e:
+                        # Fallback to simple multiplier if PricingEngine fails
+                        logger.warning(f"Error using PricingEngine for rule simulation, falling back to multiplier: {e}")
+                        new_price = baseline_price * multiplier
+                    
                     price_change_pct = ((new_price - baseline_price) / baseline_price) * 100
                     elasticity = get_demand_elasticity(dimensions)
                     demand_change_pct = elasticity * price_change_pct

@@ -30,6 +30,11 @@ from app.agents.utils import (
     query_traffic_data,
     query_news_data
 )
+from app.pricing_engine import PricingEngine
+from app.agents.pricing_helpers import (
+    build_order_data_from_segment,
+    apply_pricing_rule_to_order_data
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -2000,27 +2005,97 @@ def calculate_whatif_impact_for_pipeline(recommendations: str) -> str:
         margin_impact_pct = extract_percentage(expected_impact.get("profit_margin_improvement", "0"))
         churn_reduction_pct = extract_percentage(expected_impact.get("churn_reduction", "0"))
         
-        # If not in expected_impact, estimate from recommendations_by_objective
+        # If not in expected_impact, calculate from recommendations using PricingEngine
         if revenue_impact_pct == 0:
-            recs_by_obj = recs.get("recommendations_by_objective", {})
-            rec_text = json.dumps(recs_by_obj).lower()
+            # Try to extract rules from recommendations and simulate using PricingEngine
+            recommendations_list = recs.get("recommendations", [])
             
-            # Estimate based on recommendation content
-            if "surge" in rec_text or "multiplier" in rec_text:
-                revenue_impact_pct += 15
-                margin_impact_pct += 8
-            if "loyalty" in rec_text or "gold" in rec_text or "retention" in rec_text:
-                churn_reduction_pct += 12
-                revenue_impact_pct += 5
-            if "competitive" in rec_text or "competitor" in rec_text or "gap" in rec_text:
-                revenue_impact_pct += 8
-                churn_reduction_pct += 5
-            if "urban" in rec_text or "location" in rec_text:
-                revenue_impact_pct += 10
-                margin_impact_pct += 5
-            if "rush" in rec_text or "peak" in rec_text or "evening" in rec_text or "morning" in rec_text:
-                revenue_impact_pct += 12
-                margin_impact_pct += 7
+            if recommendations_list and len(recommendations_list) > 0:
+                # Use PricingEngine to simulate rule impact
+                try:
+                    pricing_engine = PricingEngine()
+                    
+                    # Get top recommendation (first one)
+                    top_rec = recommendations_list[0]
+                    rules = top_rec.get("rules", [])
+                    rule_names = top_rec.get("rule_names", [])
+                    
+                    if rules and len(rules) > 0:
+                        # Simulate impact using PricingEngine
+                        # Create a representative segment for simulation
+                        representative_segment = {
+                            "loyalty_tier": "Gold",  # High-value segment
+                            "vehicle_type": "Premium",
+                            "demand_profile": "HIGH",
+                            "pricing_model": "STANDARD",
+                            "location": "Urban"
+                        }
+                        
+                        # Build order_data
+                        order_data = build_order_data_from_segment(representative_segment, [])
+                        
+                        # Apply all rules in the recommendation
+                        for rule_id in rules:
+                            # Find rule in recommendations (simplified - in real implementation, fetch from MongoDB)
+                            # For now, estimate multiplier from rule_id
+                            rule_multiplier = 1.1  # Default estimate
+                            order_data["rule_multiplier"] = order_data.get("rule_multiplier", 1.0) * rule_multiplier
+                        
+                        # Calculate price with rules applied
+                        if "rule_multiplier" in order_data and order_data["rule_multiplier"] != 1.0:
+                            base_result = pricing_engine.calculate_price(order_data)
+                            base_price = base_result.get("final_price", 0)
+                            new_price = base_price * order_data["rule_multiplier"]
+                            price_change = ((new_price - base_price) / base_price * 100) if base_price > 0 else 0
+                            
+                            # Estimate revenue impact from price change
+                            # Assume 10% of price increase translates to revenue (with elasticity)
+                            revenue_impact_pct = max(price_change * 0.1, 5)  # At least 5%
+                            margin_impact_pct = price_change * 0.15  # Margin improves with price
+                            
+                            logger.info(f"PricingEngine simulation: price_change={price_change:.1f}%, revenue_impact={revenue_impact_pct:.1f}%")
+                    
+                except Exception as e:
+                    logger.warning(f"Error using PricingEngine for what-if analysis, falling back to keyword estimation: {e}")
+                    # Fall back to keyword estimation
+                    recs_by_obj = recs.get("recommendations_by_objective", {})
+                    rec_text = json.dumps(recs_by_obj).lower()
+                    
+                    if "surge" in rec_text or "multiplier" in rec_text:
+                        revenue_impact_pct += 15
+                        margin_impact_pct += 8
+                    if "loyalty" in rec_text or "gold" in rec_text or "retention" in rec_text:
+                        churn_reduction_pct += 12
+                        revenue_impact_pct += 5
+                    if "competitive" in rec_text or "competitor" in rec_text or "gap" in rec_text:
+                        revenue_impact_pct += 8
+                        churn_reduction_pct += 5
+                    if "urban" in rec_text or "location" in rec_text:
+                        revenue_impact_pct += 10
+                        margin_impact_pct += 5
+                    if "rush" in rec_text or "peak" in rec_text or "evening" in rec_text or "morning" in rec_text:
+                        revenue_impact_pct += 12
+                        margin_impact_pct += 7
+            else:
+                # Fall back to keyword estimation if no recommendations structure
+                recs_by_obj = recs.get("recommendations_by_objective", {})
+                rec_text = json.dumps(recs_by_obj).lower()
+                
+                if "surge" in rec_text or "multiplier" in rec_text:
+                    revenue_impact_pct += 15
+                    margin_impact_pct += 8
+                if "loyalty" in rec_text or "gold" in rec_text or "retention" in rec_text:
+                    churn_reduction_pct += 12
+                    revenue_impact_pct += 5
+                if "competitive" in rec_text or "competitor" in rec_text or "gap" in rec_text:
+                    revenue_impact_pct += 8
+                    churn_reduction_pct += 5
+                if "urban" in rec_text or "location" in rec_text:
+                    revenue_impact_pct += 10
+                    margin_impact_pct += 5
+                if "rush" in rec_text or "peak" in rec_text or "evening" in rec_text or "morning" in rec_text:
+                    revenue_impact_pct += 12
+                    margin_impact_pct += 7
             
             # Cap at targets
             revenue_impact_pct = min(revenue_impact_pct, 25)
