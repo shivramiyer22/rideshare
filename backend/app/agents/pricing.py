@@ -399,6 +399,82 @@ def calculate_price_with_explanation(order_data: Dict[str, Any]) -> Dict[str, An
         }
 
 
+@tool
+def estimate_ride_price(
+    location_category: str,
+    loyalty_tier: str,
+    vehicle_type: str,
+    pricing_model: str = "STANDARD",
+    distance: float = None,
+    duration: float = None
+) -> str:
+    """
+    Estimate ride price for given segment and optional trip details.
+    
+    Use this tool when user asks about price estimation without creating an order.
+    This is perfect for "what would this ride cost?" or "price preview" queries.
+    
+    Provides comprehensive estimate combining:
+    - Historical baseline (average price/distance from past similar rides)
+    - Forecast prediction (expected price trends for next 30 days)
+    - Estimated price (segment average OR PricingEngine calculation if trip details provided)
+    
+    Args:
+        location_category: "Urban", "Suburban", or "Rural"
+        loyalty_tier: "Gold", "Silver", or "Regular"
+        vehicle_type: "Premium" or "Economy"
+        pricing_model: "CONTRACTED", "STANDARD", or "CUSTOM" (default: "STANDARD")
+        distance: Optional trip distance in miles (if known)
+        duration: Optional trip duration in minutes (if known)
+    
+    Returns:
+        str: JSON string with comprehensive estimate including:
+             - segment dimensions
+             - historical_baseline (avg_price, avg_distance, avg_duration, sample_size)
+             - forecast_prediction (predicted_price_30d, predicted_demand_30d)
+             - estimated_price (recommended estimate)
+             - price_breakdown (if distance/duration provided)
+             - explanation (natural language description)
+             - assumptions (list of assumptions made)
+    
+    Example:
+        User: "What would a Premium ride in Urban area cost for a Gold member?"
+        Response: Returns estimate with historical avg, forecast, and explanation
+    """
+    try:
+        from app.agents.segment_analysis import calculate_segment_estimate
+        
+        # Build segment dimensions
+        segment_dimensions = {
+            "location_category": location_category,
+            "loyalty_tier": loyalty_tier,
+            "vehicle_type": vehicle_type,
+            "pricing_model": pricing_model
+        }
+        
+        # Build trip details if provided
+        trip_details = None
+        if distance is not None and duration is not None:
+            trip_details = {
+                "distance": distance,
+                "duration": duration
+            }
+        
+        # Calculate estimate
+        estimate = calculate_segment_estimate(segment_dimensions, trip_details)
+        
+        # Return as formatted JSON
+        return json.dumps(estimate, indent=2)
+    
+    except Exception as e:
+        return json.dumps({
+            "error": str(e),
+            "segment": segment_dimensions if 'segment_dimensions' in locals() else {},
+            "estimated_price": 0.0,
+            "explanation": f"Error calculating estimate: {str(e)}"
+        })
+
+
 # Create the pricing agent
 # Handle missing API key gracefully (for testing environments)
 try:
