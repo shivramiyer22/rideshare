@@ -1543,172 +1543,248 @@ def _generate_external_data_explanation(
 
 
 @tool
-def get_combined_pricing_rules() -> str:
+def generate_and_rank_pricing_rules() -> str:
     """
-    Get combined pricing rules from MongoDB pricing_strategies collection and newly generated rules.
+    Generate pricing rules from current data patterns only and rank by impact.
     
-    This tool combines:
-    1. Existing rules from pricing_strategies MongoDB collection
-    2. Rules from ChromaDB strategy_knowledge_vectors  
-    3. Newly generated rules from current data analysis
+    This tool:
+    1. Analyzes historical rides and competitor data
+    2. Generates rules based on current patterns (NO MongoDB rule loading)
+    3. Incorporates competitor gap analysis
+    4. Incorporates external data insights (events, traffic)
+    5. Ranks rules by estimated impact
+    6. Stores top 30 rules in MongoDB (replacing old rules)
     
-    Returns merged, deduplicated pricing rules for recommendation analysis.
+    Rule Categories:
+    - location_based: Urban/Suburban/Rural pricing adjustments
+    - loyalty_based: Gold/Silver/Regular tier treatment
+    - demand_based: HIGH/MEDIUM/LOW demand surge pricing
+    - vehicle_based: Premium/Economy pricing
     
     Returns:
-        str: JSON string with combined pricing rules
+        str: JSON with 20-30 generated rules ranked by impact
     """
     try:
+        from datetime import datetime
         client = get_sync_mongodb_client()
         db = client[settings.mongodb_db_name]
         
         try:
-            # 1. Load existing rules from MongoDB pricing_strategies
-            strategies_collection = db["pricing_strategies"]
-            existing_rules = list(strategies_collection.find({}))
-            
-            # Extract rules from nested structure
-            mongodb_rules = []
-            for strategy in existing_rules:
-                if "pricing_rules" in strategy and isinstance(strategy["pricing_rules"], dict):
-                    # Handle nested structure from dynamic_pricing_rules.json
-                    for category, rules_list in strategy["pricing_rules"].items():
-                        if isinstance(rules_list, list):
-                            for rule in rules_list:
-                                rule_copy = rule.copy()
-                                rule_copy["source"] = "mongodb"
-                                rule_copy["category"] = category
-                                mongodb_rules.append(rule_copy)
-            
-            # 2. Query ChromaDB for strategy knowledge
-            chromadb_rules = []
-            try:
-                strategy_docs = query_chromadb("strategy_knowledge_vectors", "pricing rules location time loyalty", n_results=20)
-                for doc in strategy_docs:
-                    if "content" in doc:
-                        # Extract rule-like information from content
-                        content = doc["content"]
-                        if "multiplier" in content.lower() or "surge" in content.lower():
-                            chromadb_rules.append({
-                                "source": "chromadb",
-                                "content": content[:200],
-                                "mongodb_id": doc.get("mongodb_id", "")
-                            })
-            except:
-                pass  # ChromaDB query failed, continue with MongoDB rules only
-            
-            # 3. Generate new rules from current data patterns
             hwco_collection = db["historical_rides"]
             competitor_collection = db["competitor_prices"]
+            events_collection = db["events_data"]
+            traffic_collection = db["traffic_data"]
             
-            # Analyze current patterns for new rules
-            hwco_data = list(hwco_collection.find({}).limit(500))
+            # Get data
+            hwco_data = list(hwco_collection.find({}).limit(1000))
             competitor_data = list(competitor_collection.find({}).limit(500))
+            events = list(events_collection.find({}).limit(50))
+            traffic = list(traffic_collection.find({}).limit(50))
+            
+            if not hwco_data:
+                return json.dumps({"error": "No historical data found", "rules": []})
             
             generated_rules = []
             
-            # Analyze loyalty tier patterns
+            # 1. Location-based rules (compare with competitors)
+            for location in ["Urban", "Suburban", "Rural"]:
+                hwco_loc = [r for r in hwco_data if r.get("Location_Category") == location]
+                comp_loc = [r for r in competitor_data if r.get("Location_Category") == location]
+                
+                if len(hwco_loc) >= 10:
+                    hwco_avg = sum(r.get("Historical_Cost_of_Ride", 0) for r in hwco_loc) / len(hwco_loc)
+                    comp_avg = sum(r.get("Historical_Cost_of_Ride", 0) or r.get("price", 0) for r in comp_loc) / len(comp_loc) if comp_loc else hwco_avg
+                    
+                    if comp_avg > 0:
+                        gap = ((comp_avg - hwco_avg) / hwco_avg) if hwco_avg > 0 else 0
+                        
+                        if abs(gap) > 0.05:  # 5% gap threshold
+                            multiplier = 1 + (gap * 0.5)  # Close 50% of gap
+                            multiplier = max(0.85, min(1.5, multiplier))  # Cap between 0.85x and 1.5x
+                            
+                            generated_rules.append({
+                                "rule_id": f"GEN_LOC_{location.upper()}",
+                                "name": f"{location} Pricing Adjustment",
+                                "description": f"Close {abs(gap)*100:.1f}% pricing gap with competitors in {location} areas",
+                                "category": "location_based",
+                                "condition": {"location": location},
+                                "action": {"multiplier": round(multiplier, 2)},
+                                "estimated_impact": abs(gap) * 100,
+                                "confidence": "high" if len(hwco_loc) >= 50 else "medium",
+                                "ride_count": len(hwco_loc),
+                                "source": "generated"
+                            })
+            
+            # 2. Loyalty-based rules
             loyalty_stats = {}
             for ride in hwco_data:
                 loyalty = ride.get("Customer_Loyalty_Status", "Unknown")
-                ride_count = loyalty_stats.get(loyalty, {"count": 0, "total_price": 0})
-                ride_count["count"] += 1
-                ride_count["total_price"] += ride.get("Historical_Cost_of_Ride", 0)
-                loyalty_stats[loyalty] = ride_count
+                if loyalty not in loyalty_stats:
+                    loyalty_stats[loyalty] = {"count": 0, "total_price": 0, "rides": []}
+                loyalty_stats[loyalty]["count"] += 1
+                loyalty_stats[loyalty]["total_price"] += ride.get("Historical_Cost_of_Ride", 0)
+                loyalty_stats[loyalty]["rides"].append(ride)
             
-            # Generate loyalty-based rules
             for loyalty, stats in loyalty_stats.items():
                 if stats["count"] >= 25:
                     avg_price = stats["total_price"] / stats["count"]
-                    generated_rules.append({
-                        "rule_id": f"GEN_LOYAL_{loyalty.upper()}",
-                        "name": f"{loyalty} Tier Pricing Pattern",
-                        "description": f"Detected pattern for {loyalty} customers ({stats['count']} rides)",
-                        "category": "loyalty_based",
-                        "condition": {"loyalty_tier": loyalty},
-                        "current_avg_price": round(avg_price, 2),
-                        "ride_count": stats["count"],
-                        "source": "generated",
-                        "confidence": "high" if stats["count"] >= 50 else "medium"
-                    })
+                    
+                    # Gold tier: Cap surge at 1.25x for retention
+                    if loyalty == "Gold":
+                        generated_rules.append({
+                            "rule_id": f"GEN_LOYAL_{loyalty.upper()}_CAP",
+                            "name": f"{loyalty} Tier Surge Protection",
+                            "description": f"Cap surge pricing at 1.25x for {loyalty} customers to improve retention",
+                            "category": "loyalty_based",
+                            "condition": {"loyalty_tier": loyalty},
+                            "action": {"max_multiplier": 1.25},
+                            "estimated_impact": 12.0,  # Retention impact
+                            "confidence": "high" if stats["count"] >= 50 else "medium",
+                            "ride_count": stats["count"],
+                            "source": "generated"
+                        })
+                    
+                    # Silver tier: Conversion incentive
+                    elif loyalty == "Silver" and stats["count"] >= 50:
+                        generated_rules.append({
+                            "rule_id": f"GEN_LOYAL_{loyalty.upper()}_CONVERT",
+                            "name": f"{loyalty} to Gold Conversion",
+                            "description": f"Offer 3% discount to {loyalty} customers with 25+ rides to convert to Gold",
+                            "category": "loyalty_based",
+                            "condition": {"loyalty_tier": loyalty, "min_rides": 25},
+                            "action": {"multiplier": 0.97},
+                            "estimated_impact": 15.0,  # Conversion impact
+                            "confidence": "medium",
+                            "ride_count": stats["count"],
+                            "source": "generated"
+                        })
             
-            # Analyze demand profile patterns
+            # 3. Demand-based rules
             demand_stats = {}
             for ride in hwco_data:
                 demand = ride.get("Demand_Profile", "Unknown")
-                demand_count = demand_stats.get(demand, {"count": 0, "total_price": 0})
-                demand_count["count"] += 1
-                demand_count["total_price"] += ride.get("Historical_Cost_of_Ride", 0)
-                demand_stats[demand] = demand_count
+                if demand not in demand_stats:
+                    demand_stats[demand] = {"count": 0, "total_price": 0}
+                demand_stats[demand]["count"] += 1
+                demand_stats[demand]["total_price"] += ride.get("Historical_Cost_of_Ride", 0)
             
-            # Generate demand-based rules
             for demand, stats in demand_stats.items():
                 if stats["count"] >= 20:
+                    if demand == "HIGH":
+                        # High demand surge
+                        generated_rules.append({
+                            "rule_id": f"GEN_DEMAND_{demand}_SURGE",
+                            "name": f"{demand} Demand Surge Pricing",
+                            "description": f"Apply 1.5x surge multiplier during {demand} demand periods",
+                            "category": "demand_based",
+                            "condition": {"demand_profile": demand},
+                            "action": {"multiplier": 1.5},
+                            "estimated_impact": 30.0,  # High revenue impact
+                            "confidence": "high" if stats["count"] >= 50 else "medium",
+                            "ride_count": stats["count"],
+                            "source": "generated"
+                        })
+                    elif demand == "LOW":
+                        # Low demand discount
+                        generated_rules.append({
+                            "rule_id": f"GEN_DEMAND_{demand}_DISCOUNT",
+                            "name": f"{demand} Demand Discount",
+                            "description": f"Apply 0.95x discount during {demand} demand to stimulate demand",
+                            "category": "demand_based",
+                            "condition": {"demand_profile": demand},
+                            "action": {"multiplier": 0.95},
+                            "estimated_impact": 8.0,  # Demand stimulation
+                            "confidence": "medium",
+                            "ride_count": stats["count"],
+                            "source": "generated"
+                        })
+            
+            # 4. Vehicle-based rules
+            vehicle_stats = {}
+            for ride in hwco_data:
+                vehicle = ride.get("Vehicle_Type", "Unknown")
+                if vehicle not in vehicle_stats:
+                    vehicle_stats[vehicle] = {"count": 0, "total_price": 0}
+                vehicle_stats[vehicle]["count"] += 1
+                vehicle_stats[vehicle]["total_price"] += ride.get("Historical_Cost_of_Ride", 0)
+            
+            for vehicle, stats in vehicle_stats.items():
+                if stats["count"] >= 20 and vehicle == "Premium":
                     avg_price = stats["total_price"] / stats["count"]
+                    # Premium vehicle premium pricing
                     generated_rules.append({
-                        "rule_id": f"GEN_DEMAND_{demand}",
-                        "name": f"{demand} Demand Pricing",
-                        "description": f"Detected {demand} demand pattern ({stats['count']} rides)",
-                        "category": "demand_based",
-                        "condition": {"demand_profile": demand},
-                        "current_avg_price": round(avg_price, 2),
+                        "rule_id": f"GEN_VEHICLE_{vehicle.upper()}",
+                        "name": f"{vehicle} Vehicle Premium Pricing",
+                        "description": f"Apply 1.20x multiplier for {vehicle} vehicles during HIGH demand",
+                        "category": "vehicle_based",
+                        "condition": {"vehicle_type": vehicle, "demand_profile": "HIGH"},
+                        "action": {"multiplier": 1.20},
+                        "estimated_impact": 15.0,
+                        "confidence": "high" if stats["count"] >= 50 else "medium",
                         "ride_count": stats["count"],
-                        "source": "generated",
-                        "confidence": "high" if stats["count"] >= 50 else "medium"
+                        "source": "generated"
                     })
+            
+            # 5. Incorporate external data insights
+            high_impact_events = [e for e in events if e.get("expected_attendees", 0) > 5000]
+            heavy_traffic = [t for t in traffic if "heavy" in str(t.get("traffic_level", "")).lower()]
+            
+            if len(high_impact_events) > 0:
+                generated_rules.append({
+                    "rule_id": "GEN_EVENT_SURGE",
+                    "name": "Major Event Surge Pricing",
+                    "description": f"Apply 1.7x surge during major events ({len(high_impact_events)} events detected)",
+                    "category": "demand_based",
+                    "condition": {"demand_profile": "HIGH"},
+                    "action": {"multiplier": 1.7},
+                    "estimated_impact": 40.0,
+                    "confidence": "high",
+                    "ride_count": 0,
+                    "source": "generated",
+                    "external_data": True
+                })
+            
+            # Rank by estimated impact
+            generated_rules.sort(key=lambda x: x.get("estimated_impact", 0), reverse=True)
+            
+            # Store top 30 rules in MongoDB (replace old rules)
+            strategies_collection = db["pricing_strategies"]
+            strategies_collection.delete_many({})  # Clear old rules
+            
+            if generated_rules:
+                strategies_collection.insert_one({
+                    "generated_at": datetime.utcnow(),
+                    "rules": generated_rules[:30],  # Top 30 rules
+                    "source": "analysis_agent_auto_generated",
+                    "total_rules_generated": len(generated_rules)
+                })
             
         finally:
             client.close()
         
-        # 4. Merge and deduplicate
-        all_rules = mongodb_rules + generated_rules
-        
-        # Deduplicate by rule_id (prefer mongodb over generated)
-        seen_ids = set()
-        combined_rules = []
-        
-        # First add MongoDB rules
-        for rule in mongodb_rules:
-            rule_id = rule.get("rule_id", "")
-            if rule_id and rule_id not in seen_ids:
-                combined_rules.append(rule)
-                seen_ids.add(rule_id)
-        
-        # Then add generated rules if not duplicate
-        for rule in generated_rules:
-            rule_id = rule.get("rule_id", "")
-            if rule_id and rule_id not in seen_ids:
-                combined_rules.append(rule)
-                seen_ids.add(rule_id)
-        
-        # Categorize rules
+        # Categorize for summary
         by_category = {
-            "location_based": [],
-            "time_based": [],
-            "loyalty_based": [],
-            "demand_based": [],
-            "other": []
+            "location_based": [r for r in generated_rules if r["category"] == "location_based"],
+            "loyalty_based": [r for r in generated_rules if r["category"] == "loyalty_based"],
+            "demand_based": [r for r in generated_rules if r["category"] == "demand_based"],
+            "vehicle_based": [r for r in generated_rules if r["category"] == "vehicle_based"]
         }
-        
-        for rule in combined_rules:
-            category = rule.get("category", "other")
-            by_category.get(category, by_category["other"]).append(rule)
         
         result = {
             "summary": {
-                "total_rules": len(combined_rules),
-                "mongodb_rules": len(mongodb_rules),
-                "chromadb_context": len(chromadb_rules),
-                "generated_rules": len(generated_rules),
-                "by_category": {k: len(v) for k, v in by_category.items()}
+                "total_rules_generated": len(generated_rules),
+                "top_rules_count": min(20, len(generated_rules)),
+                "by_category": {k: len(v) for k, v in by_category.items()},
+                "stored_in_mongodb": min(30, len(generated_rules))
             },
-            "combined_rules": combined_rules,
-            "by_category": by_category
+            "top_rules": generated_rules[:20],  # Return top 20 for response
+            "by_category": {k: v[:5] for k, v in by_category.items()}  # Top 5 per category
         }
         
         return json.dumps(result)
         
     except Exception as e:
-        return json.dumps({"error": f"Error combining pricing rules: {str(e)}", "combined_rules": []})
+        return json.dumps({"error": f"Error generating pricing rules: {str(e)}", "rules": []})
 
 
 @tool
@@ -2178,7 +2254,9 @@ try:
             query_news_events,
             query_customer_behavior,
             # Structured insights generation
-            generate_structured_insights
+            generate_structured_insights,
+            # Pricing rules generation (NEW - simplified, replaces get_combined_pricing_rules)
+            generate_and_rank_pricing_rules
         ],
         system_prompt=(
             "You are a data analysis specialist for a rideshare company. "

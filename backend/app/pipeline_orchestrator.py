@@ -267,111 +267,49 @@ class AgentPipeline:
         logger.info("    → Running Forecasting Agent...")
         
         try:
-            from app.agents.forecasting import generate_prophet_forecast, explain_forecast, query_event_context
-            
-            forecasts = {}
-            explanations = {}
-            model_retrained = False
-            retraining_result = None
+            from app.agents.forecasting import generate_multidimensional_forecast
             
             # ================================================================
-            # STEP 1: Check if data has changed and retrain model if needed
+            # STEP 1: Generate multi-dimensional forecasts (162 segments)
             # ================================================================
-            logger.info("      - Checking if model retraining is needed...")
+            logger.info("      - Generating multi-dimensional forecasts (162 segments)...")
             
             try:
-                retrain_needed, retrain_reason = await self._check_if_retrain_needed()
-                
-                if retrain_needed:
-                    logger.info(f"      - Model retraining triggered: {retrain_reason}")
-                    retraining_result = await self._retrain_prophet_model()
-                    model_retrained = retraining_result.get("success", False)
-                    
-                    if model_retrained:
-                        logger.info(f"      - Model retrained successfully: {retraining_result.get('training_rows', 0)} rows, MAPE: {retraining_result.get('mape', 'N/A')}")
-                    else:
-                        logger.warning(f"      - Model retraining failed: {retraining_result.get('error', 'Unknown error')}")
-                else:
-                    logger.info(f"      - No retraining needed: {retrain_reason}")
-            except Exception as e:
-                logger.warning(f"      - Retraining check failed: {e}")
-                retrain_reason = f"Retraining check error: {e}"
-            
-            # ================================================================
-            # STEP 2: Get event context for forecast explanations
-            # ================================================================
-            try:
-                event_context = query_event_context.invoke({
-                    "query": "upcoming events traffic demand",
-                    "n_results": 10
+                # Generate comprehensive multi-dimensional forecast
+                forecast_result = generate_multidimensional_forecast.invoke({
+                    "periods": 90  # Generate 90-day forecast (includes 30/60/90)
                 })
-            except Exception as e:
-                logger.warning(f"    Event context query failed: {e}")
-                event_context = "No event context available"
-            
-            # ================================================================
-            # STEP 3: Generate forecasts for each pricing model
-            # ================================================================
-            logger.info("      - Generating forecasts...")
-            
-            for pricing_model in ["CONTRACTED", "STANDARD", "CUSTOM"]:
-                for periods in [30, 60, 90]:
+                
+                # Parse result
+                if isinstance(forecast_result, str):
                     try:
-                        # Generate forecast
-                        forecast_result = generate_prophet_forecast.invoke({
-                            "pricing_model": pricing_model,
-                            "periods": periods
-                        })
-                        
-                        # Parse result if it's a string
-                        if isinstance(forecast_result, str):
-                            try:
-                                forecast_result = json.loads(forecast_result)
-                            except json.JSONDecodeError:
-                                forecast_result = {"raw": forecast_result}
-                        
-                        key = f"{pricing_model}_{periods}d"
-                        
-                        # Generate explanation for this forecast
-                        try:
-                            explained = explain_forecast.invoke({
-                                "forecast_data": forecast_result,
-                                "event_context": event_context
-                            })
-                            
-                            if isinstance(explained, dict):
-                                # Add explanation to forecast result
-                                forecast_result["explanation"] = explained.get("explanation", "")
-                                forecast_result["context"] = explained.get("context", {})
-                                explanations[key] = explained.get("explanation", "")
-                            else:
-                                forecast_result["explanation"] = str(explained)
-                                explanations[key] = str(explained)
-                        except Exception as e:
-                            logger.warning(f"    Explanation generation for {key} failed: {e}")
-                            forecast_result["explanation"] = f"Forecast generated but explanation unavailable: {e}"
-                        
-                        forecasts[key] = forecast_result
-                        
-                    except Exception as e:
-                        logger.warning(f"    Forecast {pricing_model}/{periods}d failed: {e}")
-                        forecasts[f"{pricing_model}_{periods}d"] = {"error": str(e)}
-            
-            # Generate summary explanation for all forecasts
-            summary_explanation = self._generate_forecast_summary(forecasts)
-            
-            return {
-                "success": True,
-                "data": {
-                    "model_retrained": model_retrained,
-                    "retraining_info": retraining_result if model_retrained else {"reason": retrain_reason},
-                    "forecasts": forecasts,
-                    "explanations": explanations,
-                    "summary_explanation": summary_explanation,
-                    "event_context_used": event_context[:200] if isinstance(event_context, str) else "Context available",
-                    "generated_at": datetime.utcnow().isoformat()
+                        forecast_data = json.loads(forecast_result)
+                    except json.JSONDecodeError:
+                        forecast_data = {"error": "Failed to parse forecast result"}
+                else:
+                    forecast_data = forecast_result
+                
+                if "error" in forecast_data:
+                    logger.error(f"      - Forecast generation failed: {forecast_data.get('error')}")
+                    return {"success": False, "error": forecast_data.get("error")}
+                
+                summary = forecast_data.get("summary", {})
+                logger.info(f"      - Generated {summary.get('forecasted_segments', 0)} segment forecasts")
+                logger.info(f"      - Total segments: {summary.get('total_possible_segments', 0)}")
+                logger.info(f"      - Revenue growth (30d): {summary.get('revenue_growth_30d_pct', 0):.1f}%")
+                
+                return {
+                    "success": True,
+                    "data": {
+                        "forecasts": forecast_data,
+                        "summary": summary,
+                        "generated_at": datetime.utcnow().isoformat()
+                    }
                 }
-            }
+                
+            except Exception as e:
+                logger.error(f"    Multi-dimensional forecast generation failed: {e}")
+                return {"success": False, "error": str(e)}
             
         except Exception as e:
             logger.error(f"    Forecasting phase error: {e}")
@@ -744,109 +682,54 @@ class AgentPipeline:
     
     async def _run_analysis_phase(self) -> Dict[str, Any]:
         """
-        Run the Analysis Agent for comprehensive data analysis WITH EXPLANATIONS.
+        Run the Analysis Agent to generate and rank pricing rules.
         
-        Includes:
-        - Competitor analysis (HWCO vs competitors)
-        - External data analysis (news, events, traffic)
-        - Dynamic pricing rules regeneration
-        
-        Each analysis includes a natural language explanation.
+        Simplified: Uses single combined tool that:
+        - Analyzes competitor gaps
+        - Incorporates external data (events, traffic, news)
+        - Generates pricing rules from current patterns
+        - Ranks rules by impact
         """
         logger.info("    → Running Analysis Agent...")
         
         try:
-            # Import analysis tools
-            from app.agents.analysis import (
-                analyze_customer_segments,
-                analyze_location_performance,
-                analyze_time_patterns,
-                get_top_revenue_rides,
-                calculate_revenue_kpis
-            )
+            # Use simplified combined tool
+            from app.agents.analysis import generate_and_rank_pricing_rules
             
-            analysis_results = {}
-            explanations = {}
-            
-            # 1. Competitor Analysis (HWCO vs historical competitor data)
-            logger.info("      - Analyzing competitor data...")
+            logger.info("      - Generating and ranking pricing rules...")
             try:
-                from app.agents.analysis import analyze_competitor_data_for_pipeline
-                competitor_result = analyze_competitor_data_for_pipeline.invoke({})
+                rules_result = generate_and_rank_pricing_rules.invoke({})
                 
-                # Parse JSON result to extract explanation
-                if isinstance(competitor_result, str):
+                # Parse JSON result
+                if isinstance(rules_result, str):
                     try:
-                        competitor_data = json.loads(competitor_result)
-                        explanations["competitor"] = competitor_data.get("explanation", "")
-                        analysis_results["competitor"] = competitor_data
+                        rules_data = json.loads(rules_result)
                     except json.JSONDecodeError:
-                        analysis_results["competitor"] = {"raw": competitor_result}
+                        rules_data = {"error": "Failed to parse rules result", "raw": rules_result}
                 else:
-                    explanations["competitor"] = competitor_result.get("explanation", "")
-                    analysis_results["competitor"] = competitor_result
-            except Exception as e:
-                logger.warning(f"      Competitor analysis failed: {e}")
-                analysis_results["competitor"] = {"error": str(e)}
-            
-            # 2. External Data Analysis (news, events, traffic)
-            logger.info("      - Analyzing external data...")
-            try:
-                from app.agents.analysis import analyze_external_data_for_pipeline
-                external_result = analyze_external_data_for_pipeline.invoke({})
+                    rules_data = rules_result
                 
-                # Parse JSON result to extract explanation
-                if isinstance(external_result, str):
-                    try:
-                        external_data = json.loads(external_result)
-                        explanations["external"] = external_data.get("explanation", "")
-                        analysis_results["external"] = external_data
-                    except json.JSONDecodeError:
-                        analysis_results["external"] = {"raw": external_result}
-                else:
-                    explanations["external"] = external_result.get("explanation", "")
-                    analysis_results["external"] = external_result
-            except Exception as e:
-                logger.warning(f"      External data analysis failed: {e}")
-                analysis_results["external"] = {"error": str(e)}
-            
-            # 3. Dynamic Pricing Rules Generation
-            logger.info("      - Generating pricing rules...")
-            try:
-                from app.agents.analysis import generate_pricing_rules_for_pipeline
-                pricing_result = generate_pricing_rules_for_pipeline.invoke({})
+                if "error" in rules_data:
+                    logger.error(f"      - Rules generation failed: {rules_data.get('error')}")
+                    return {"success": False, "error": rules_data.get("error")}
                 
-                # Parse JSON result to extract explanation
-                if isinstance(pricing_result, str):
-                    try:
-                        pricing_data = json.loads(pricing_result)
-                        explanations["pricing_rules"] = pricing_data.get("explanation", "")
-                        analysis_results["pricing_rules"] = pricing_data
-                    except json.JSONDecodeError:
-                        analysis_results["pricing_rules"] = {"raw": pricing_result}
-                else:
-                    explanations["pricing_rules"] = pricing_result.get("explanation", "")
-                    analysis_results["pricing_rules"] = pricing_result
+                summary = rules_data.get("summary", {})
+                logger.info(f"      - Generated {summary.get('total_rules_generated', 0)} pricing rules")
+                logger.info(f"      - Top rules: {summary.get('top_rules_count', 0)}")
+                logger.info(f"      - Categories: {summary.get('by_category', {})}")
+                
+                return {
+                    "success": True,
+                    "data": {
+                        "pricing_rules": rules_data,
+                        "summary": summary,
+                        "generated_at": datetime.utcnow().isoformat()
+                    }
+                }
+                
             except Exception as e:
-                logger.warning(f"      Pricing rules generation failed: {e}")
-                analysis_results["pricing_rules"] = {"error": str(e)}
-            
-            # 4. Run existing analysis tools for KPIs
-            logger.info("      - Calculating KPIs...")
-            try:
-                kpi_result = calculate_revenue_kpis.invoke({"time_period": "30d"})
-                analysis_results["kpis"] = json.loads(kpi_result) if isinstance(kpi_result, str) else kpi_result
-            except Exception as e:
-                logger.warning(f"      KPI calculation failed: {e}")
-                analysis_results["kpis"] = {"error": str(e)}
-            
-            # Generate summary explanation for all analysis
-            summary_explanation = self._generate_analysis_summary(analysis_results, explanations)
-            
-            return {
-                "success": True,
-                "data": {
-                    "analysis": analysis_results,
+                logger.error(f"    Rules generation failed: {e}")
+                return {"success": False, "error": str(e)}
                     "explanations": explanations,
                     "summary_explanation": summary_explanation,
                     "generated_at": datetime.utcnow().isoformat()
@@ -878,65 +761,64 @@ class AgentPipeline:
     
     async def _run_recommendation_phase(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Run the Recommendation Agent to generate strategic recommendations WITH EXPLANATIONS.
+        Run the Recommendation Agent to generate top 3 strategic recommendations.
+        
+        Simplified: Uses combined tool that:
+        - Simulates all pricing rules against forecasts
+        - Finds minimum rule sets achieving all 4 objectives
+        - Returns top 3 recommendations
         
         Uses context from Forecasting and Analysis phases.
-        The generate_strategic_recommendation tool returns:
-        - recommendation: The strategic recommendation
-        - reasoning: Why this recommendation (explanation)
-        - expected_impact: Projected business impact
         """
         logger.info("    → Running Recommendation Agent...")
         
         try:
-            from app.agents.recommendation import generate_strategic_recommendation, query_strategy_knowledge
+            from app.agents.recommendation import generate_strategic_recommendations
             
-            # Query strategy knowledge first for context
-            try:
-                strategy_context = query_strategy_knowledge.invoke({
-                    "query": "revenue optimization pricing strategy competitive positioning",
-                    "n_results": 10
-                })
-            except Exception as e:
-                logger.warning(f"    Strategy knowledge query failed: {e}")
-                strategy_context = "Strategic knowledge unavailable"
+            # Extract forecasts and rules from context
+            forecasts_data = context.get("forecasting", {}).get("data", {})
+            rules_data = context.get("analysis", {}).get("data", {})
             
-            # Extract explanations from analysis phase
-            analysis_explanations = context.get("analysis", {}).get("explanations", {})
-            forecast_summary = context.get("forecasting", {}).get("summary_explanation", "")
+            # Convert to JSON strings for the tool
+            forecasts_json = json.dumps(forecasts_data.get("forecasts", {})) if forecasts_data else "{}"
+            rules_json = json.dumps(rules_data.get("pricing_rules", {})) if rules_data else "{}"
             
-            # Prepare enriched context for recommendation agent
-            inner_context = {
-                "strategy_knowledge": strategy_context,
-                "recent_events": json.dumps(context.get("analysis", {}).get("analysis", {}).get("external", {})),
-                "competitor_data": json.dumps(context.get("analysis", {}).get("analysis", {}).get("competitor", {})),
-                "forecast_data": context.get("forecasting", {}).get("forecasts", {}),
-                "mongodb_ids": [],
-                # Include explanations for better context
-                "analysis_insights": analysis_explanations,
-                "forecast_insights": forecast_summary
-            }
+            if not forecasts_data or not rules_data:
+                logger.warning("    Missing forecasts or rules data, using empty data")
             
-            # Generate strategic recommendation (includes reasoning/explanation)
-            # LangChain tools expect {"param_name": value} format
-            result = generate_strategic_recommendation.invoke({"context": inner_context})
+            # Generate strategic recommendations (combined tool)
+            logger.info("      - Simulating rules and generating top 3 recommendations...")
+            result = generate_strategic_recommendations.invoke({
+                "forecasts": forecasts_json,
+                "rules": rules_json
+            })
             
+            # Parse result
             if isinstance(result, str):
                 try:
-                    result = json.loads(result)
+                    result_data = json.loads(result)
                 except json.JSONDecodeError:
-                    result = {"recommendation": result, "reasoning": "See recommendation text"}
+                    result_data = {"error": "Failed to parse recommendations result", "raw": result}
+            else:
+                result_data = result
             
-            # Extract explanation components
-            explanation = result.get("reasoning", result.get("recommendation", ""))
+            if "error" in result_data:
+                logger.error(f"      - Recommendations generation failed: {result_data.get('error')}")
+                return {"success": False, "error": result_data.get("error")}
+            
+            recommendations = result_data.get("recommendations", [])
+            logger.info(f"      - Generated {len(recommendations)} strategic recommendations")
+            
+            for rec in recommendations:
+                logger.info(f"        Recommendation #{rec.get('rank')}: {rec.get('rule_count')} rules, "
+                          f"{rec.get('objectives_achieved')}/4 objectives, "
+                          f"{rec.get('revenue_impact')} revenue impact")
             
             return {
                 "success": True,
                 "data": {
-                    "recommendations": result,
-                    "explanation": explanation,
-                    "expected_impact": result.get("expected_impact", {}),
-                    "strategy_context_used": strategy_context[:200] if isinstance(strategy_context, str) else "Context available",
+                    "recommendations": result_data,
+                    "top_3": recommendations,
                     "generated_at": datetime.utcnow().isoformat()
                 }
             }
@@ -1072,3 +954,4 @@ async def get_pipeline_history(limit: int = 10) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Failed to get pipeline history: {e}")
         return []
+

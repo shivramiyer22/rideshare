@@ -282,3 +282,4 @@ async def get_last_run():
         "message": "Last pipeline run",
         "last_run": runs[0]
     }
+

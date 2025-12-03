@@ -253,6 +253,436 @@ def get_market_context() -> str:
 
 
 @tool
+def simulate_pricing_rule_impact(pricing_rules: str, segment_forecasts: str) -> str:
+    """
+    Simulate the impact of pricing rules on multi-dimensional segment forecasts.
+    
+    This tool calculates the projected revenue, demand, and business objective impact
+    when pricing rules are applied to forecasted segments.
+    
+    For each rule and each affected segment, it calculates:
+    - Price change (multiplier effect)
+    - Demand elasticity (how demand changes with price)
+    - Revenue impact (baseline vs projected)
+    - Which business objectives are affected
+    
+    Args:
+        pricing_rules: JSON string with pricing rules (from generate_and_rank_pricing_rules)
+        segment_forecasts: JSON string with multi-dimensional forecasts (from generate_multidimensional_forecast)
+    
+    Returns:
+        str: JSON string with rule impact simulation results
+    """
+    try:
+        import pymongo
+        from app.config import settings
+        
+        # Parse inputs
+        try:
+            rules = json.loads(pricing_rules) if isinstance(pricing_rules, str) else pricing_rules
+            forecasts = json.loads(segment_forecasts) if isinstance(segment_forecasts, str) else segment_forecasts
+        except json.JSONDecodeError:
+            return json.dumps({"error": "Invalid JSON input for rules or forecasts"})
+        
+        # Extract rules and forecasts from structure
+        rules_list = rules.get("top_rules", []) if isinstance(rules, dict) else rules
+        forecast_list = forecasts.get("segmented_forecasts", []) if isinstance(forecasts, dict) else forecasts
+        
+        if not rules_list or not forecast_list:
+            return json.dumps({"error": "No rules or forecasts provided", "rule_impacts": []})
+        
+        # Define demand elasticity by segment characteristics
+        # Elasticity = % change in demand / % change in price (typically negative)
+        def get_demand_elasticity(segment_dims):
+            """Calculate demand elasticity based on segment characteristics."""
+            loyalty = segment_dims.get("loyalty_tier", "Regular")
+            demand_profile = segment_dims.get("demand_profile", "MEDIUM")
+            vehicle = segment_dims.get("vehicle_type", "Economy")
+            
+            # Base elasticity
+            elasticity = -0.5  # Default: 1% price increase = 0.5% demand decrease
+            
+            # Gold customers are less price-sensitive
+            if loyalty == "Gold":
+                elasticity = -0.3
+            elif loyalty == "Silver":
+                elasticity = -0.4
+            
+            # High demand segments are less elastic
+            if demand_profile == "HIGH":
+                elasticity *= 0.7  # Less elastic
+            elif demand_profile == "LOW":
+                elasticity *= 1.3  # More elastic
+            
+            # Premium vehicles have less elastic demand
+            if vehicle == "Premium":
+                elasticity *= 0.8
+            
+            return elasticity
+        
+        # Simulate impact for each rule
+        rule_impacts = []
+        
+        for rule in rules_list:
+            rule_id = rule.get("rule_id", "UNKNOWN")
+            rule_name = rule.get("name", "Unknown Rule")
+            rule_category = rule.get("category", "other")
+            rule_condition = rule.get("condition", {})
+            
+            # Determine multiplier from rule (simplified - exact match only)
+            multiplier = 1.0
+            if "action" in rule:
+                action = rule["action"]
+                if "multiplier" in action:
+                    multiplier = action["multiplier"]
+                elif "max_multiplier" in action:
+                    multiplier = action["max_multiplier"]  # For surge caps
+            # No fuzzy matching - use exact values from rule
+            
+            affected_segments = []
+            total_baseline_revenue = 0
+            total_projected_revenue = 0
+            total_baseline_rides = 0
+            total_projected_rides = 0
+            
+            # Check each segment to see if rule applies
+            for segment in forecast_list:
+                dimensions = segment.get("dimensions", {})
+                baseline = segment.get("baseline_metrics", {})
+                forecast_30d = segment.get("forecast_30d", {})
+                
+                # Simplified rule matching: exact match only (no fuzzy logic)
+                def rule_applies_to_segment(rule_condition, dimensions):
+                    """
+                    Simple exact matching only. No fuzzy logic, no fallbacks.
+                    Returns True if all rule conditions match segment dimensions exactly.
+                    """
+                    # Global rule (no conditions) applies to all segments
+                    if not rule_condition:
+                        return True
+                    
+                    # Check each condition field - exact match required
+                    for field, value in rule_condition.items():
+                        # Map condition field to dimension field (standardized names)
+                        dim_field = field  # Exact match (standardized names)
+                        
+                        # Special handling for nested conditions
+                        if field == "min_rides":
+                            continue  # Skip min_rides check (not a dimension filter)
+                        
+                        if dimensions.get(dim_field) != value:
+                            return False  # Doesn't match, rule doesn't apply
+                    
+                    return True  # All conditions matched
+                
+                applies = rule_applies_to_segment(rule_condition, dimensions)
+                
+                if not applies:
+                    continue
+                
+                # Calculate impact for this segment
+                baseline_price = baseline.get("avg_price", 0)
+                baseline_rides = forecast_30d.get("predicted_rides", 0)
+                baseline_revenue = forecast_30d.get("predicted_revenue", 0)
+                
+                if baseline_price == 0 or baseline_rides == 0:
+                    continue
+                
+                # Apply price multiplier
+                new_price = baseline_price * multiplier
+                price_change_pct = ((new_price - baseline_price) / baseline_price) * 100
+                
+                # Calculate demand change using elasticity
+                elasticity = get_demand_elasticity(dimensions)
+                demand_change_pct = elasticity * price_change_pct
+                
+                # Calculate new demand and revenue
+                new_rides = baseline_rides * (1 + demand_change_pct / 100)
+                new_revenue = new_rides * new_price
+                
+                revenue_change = new_revenue - baseline_revenue
+                revenue_change_pct = (revenue_change / baseline_revenue * 100) if baseline_revenue > 0 else 0
+                
+                # Track affected segment
+                affected_segments.append({
+                    "dimensions": dimensions,
+                    "baseline": {
+                        "price": round(baseline_price, 2),
+                        "rides": round(baseline_rides, 2),
+                        "revenue": round(baseline_revenue, 2)
+                    },
+                    "projected": {
+                        "price": round(new_price, 2),
+                        "rides": round(new_rides, 2),
+                        "revenue": round(new_revenue, 2)
+                    },
+                    "changes": {
+                        "price_change_pct": round(price_change_pct, 2),
+                        "demand_change_pct": round(demand_change_pct, 2),
+                        "revenue_change_pct": round(revenue_change_pct, 2),
+                        "revenue_change_amount": round(revenue_change, 2)
+                    },
+                    "elasticity": round(elasticity, 2)
+                })
+                
+                total_baseline_revenue += baseline_revenue
+                total_projected_revenue += new_revenue
+                total_baseline_rides += baseline_rides
+                total_projected_rides += new_rides
+            
+            if not affected_segments:
+                continue
+            
+            # Calculate total impact
+            total_revenue_change = total_projected_revenue - total_baseline_revenue
+            total_revenue_change_pct = (total_revenue_change / total_baseline_revenue * 100) if total_baseline_revenue > 0 else 0
+            total_demand_change_pct = ((total_projected_rides - total_baseline_rides) / total_baseline_rides * 100) if total_baseline_rides > 0 else 0
+            
+            # Determine which business objectives are affected
+            affects_objectives = []
+            
+            if total_revenue_change_pct >= 5:
+                affects_objectives.append("MAXIMIZE_REVENUE")
+            if total_revenue_change_pct >= 15:
+                affects_objectives.append("STAY_COMPETITIVE")
+            if multiplier < 1.0 or (multiplier >= 1.0 and multiplier <= 1.25 and "Gold" in str(rule_condition)):
+                affects_objectives.append("CUSTOMER_RETENTION")
+            if total_revenue_change_pct > 0 and total_demand_change_pct > -10:
+                affects_objectives.append("MAXIMIZE_PROFIT_MARGINS")
+            
+            rule_impacts.append({
+                "rule_id": rule_id,
+                "rule_name": rule_name,
+                "rule_category": rule_category,
+                "multiplier": multiplier,
+                "segments_affected_count": len(affected_segments),
+                "affected_segments": affected_segments[:10],  # Limit to first 10 for response size
+                "total_impact": {
+                    "baseline_revenue": round(total_baseline_revenue, 2),
+                    "projected_revenue": round(total_projected_revenue, 2),
+                    "revenue_increase_amount": round(total_revenue_change, 2),
+                    "revenue_increase_pct": round(total_revenue_change_pct, 2),
+                    "demand_change_pct": round(total_demand_change_pct, 2),
+                    "baseline_rides": round(total_baseline_rides, 2),
+                    "projected_rides": round(total_projected_rides, 2)
+                },
+                "affects_objectives": affects_objectives
+            })
+        
+        # Sort by revenue impact
+        rule_impacts.sort(key=lambda x: x["total_impact"]["revenue_increase_pct"], reverse=True)
+        
+        result = {
+            "simulation_summary": {
+                "total_rules_simulated": len(rules_list),
+                "rules_with_impact": len(rule_impacts),
+                "total_segments_analyzed": len(forecast_list)
+            },
+            "rule_impacts": rule_impacts[:20],  # Return top 20 rules by impact
+            "note": "Only showing top 20 rules by revenue impact and first 10 affected segments per rule"
+        }
+        
+        return json.dumps(result)
+        
+    except Exception as e:
+        return json.dumps({"error": f"Error simulating rule impact: {str(e)}", "rule_impacts": []})
+
+
+@tool
+def generate_strategic_recommendations(forecasts: str, rules: str) -> str:
+    """
+    Generate top 3 strategic recommendations by simulating all pricing rules
+    and finding minimum rule sets that achieve all 4 business objectives.
+    
+    This tool combines:
+    1. Rule impact simulation across all segments
+    2. Rule set optimization (find top 3 combinations)
+    3. Strategic recommendation generation with explanations
+    
+    Args:
+        forecasts: Multi-dimensional forecasts (162 segments) from generate_multidimensional_forecast
+        rules: Ranked pricing rules from generate_and_rank_pricing_rules
+    
+    Returns:
+        str: JSON with top 3 strategic recommendations
+    """
+    try:
+        import itertools
+        
+        # Parse inputs
+        try:
+            forecasts_data = json.loads(forecasts) if isinstance(forecasts, str) else forecasts
+            rules_data = json.loads(rules) if isinstance(rules, str) else rules
+        except json.JSONDecodeError:
+            return json.dumps({"error": "Invalid JSON input for forecasts or rules"})
+        
+        # Extract data
+        forecast_list = forecasts_data.get("segmented_forecasts", []) if isinstance(forecasts_data, dict) else forecasts_data
+        rules_list = rules_data.get("top_rules", []) if isinstance(rules_data, dict) else rules_data
+        
+        if not rules_list or not forecast_list:
+            return json.dumps({"error": "No rules or forecasts provided", "recommendations": []})
+        
+        # Step 1: Simulate each rule's impact
+        rule_impacts = []
+        
+        # Use simplified rule matching (exact match only)
+        def rule_applies_to_segment(rule_condition, dimensions):
+            if not rule_condition:
+                return True
+            for field, value in rule_condition.items():
+                if field == "min_rides":
+                    continue
+                if dimensions.get(field) != value:
+                    return False
+            return True
+        
+        def get_demand_elasticity(segment_dims):
+            """Calculate demand elasticity based on segment characteristics (KEEP AS-IS)."""
+            loyalty = segment_dims.get("loyalty_tier", "Regular")
+            demand_profile = segment_dims.get("demand_profile", "MEDIUM")
+            vehicle = segment_dims.get("vehicle_type", "Economy")
+            
+            elasticity = -0.5
+            if loyalty == "Gold":
+                elasticity = -0.3
+            elif loyalty == "Silver":
+                elasticity = -0.4
+            
+            if demand_profile == "HIGH":
+                elasticity *= 0.7
+            elif demand_profile == "LOW":
+                elasticity *= 1.3
+            
+            if vehicle == "Premium":
+                elasticity *= 0.8
+            
+            return elasticity
+        
+        # Simulate each rule
+        for rule in rules_list:
+            rule_id = rule.get("rule_id", "UNKNOWN")
+            rule_condition = rule.get("condition", {})
+            action = rule.get("action", {})
+            multiplier = action.get("multiplier", action.get("max_multiplier", 1.0))
+            
+            total_impact = {
+                "baseline_revenue": 0,
+                "projected_revenue": 0,
+                "segments_affected": 0
+            }
+            
+            for segment in forecast_list:
+                dimensions = segment.get("dimensions", {})
+                if not rule_applies_to_segment(rule_condition, dimensions):
+                    continue
+                
+                baseline = segment.get("baseline_metrics", {})
+                forecast_30d = segment.get("forecast_30d", {})
+                
+                baseline_price = baseline.get("avg_price", 0)
+                baseline_rides = forecast_30d.get("predicted_rides", 0)
+                baseline_revenue = forecast_30d.get("predicted_revenue", 0)
+                
+                if baseline_price == 0 or baseline_rides == 0:
+                    continue
+                
+                new_price = baseline_price * multiplier
+                price_change_pct = ((new_price - baseline_price) / baseline_price) * 100
+                elasticity = get_demand_elasticity(dimensions)
+                demand_change_pct = elasticity * price_change_pct
+                new_rides = baseline_rides * (1 + demand_change_pct / 100)
+                new_revenue = new_rides * new_price
+                
+                total_impact["baseline_revenue"] += baseline_revenue
+                total_impact["projected_revenue"] += new_revenue
+                total_impact["segments_affected"] += 1
+            
+            if total_impact["segments_affected"] > 0:
+                revenue_change_pct = ((total_impact["projected_revenue"] - total_impact["baseline_revenue"]) / total_impact["baseline_revenue"] * 100) if total_impact["baseline_revenue"] > 0 else 0
+                
+                # Determine objectives affected
+                affects_objectives = []
+                if revenue_change_pct >= 5:
+                    affects_objectives.append("MAXIMIZE_REVENUE")
+                if revenue_change_pct >= 15:
+                    affects_objectives.append("STAY_COMPETITIVE")
+                if multiplier < 1.0 or (multiplier >= 1.0 and multiplier <= 1.25):
+                    affects_objectives.append("CUSTOMER_RETENTION")
+                if revenue_change_pct > 0:
+                    affects_objectives.append("MAXIMIZE_PROFIT_MARGINS")
+                
+                rule_impacts.append({
+                    "rule_id": rule_id,
+                    "rule_name": rule.get("name", "Unknown"),
+                    "multiplier": multiplier,
+                    "revenue_impact_pct": revenue_change_pct,
+                    "affects_objectives": affects_objectives,
+                    "segments_affected": total_impact["segments_affected"]
+                })
+        
+        # Step 2: Find top 3 rule combinations
+        # Test combinations of 1-5 rules
+        all_combinations = []
+        for size in range(1, min(6, len(rule_impacts) + 1)):
+            for combo in itertools.combinations(rule_impacts, size):
+                # Calculate combined impact
+                combined_revenue_pct = sum(r["revenue_impact_pct"] for r in combo)
+                all_objectives = set()
+                for r in combo:
+                    all_objectives.update(r["affects_objectives"])
+                
+                objectives_met = len([obj for obj in all_objectives if obj in ["MAXIMIZE_REVENUE", "MAXIMIZE_PROFIT_MARGINS", "STAY_COMPETITIVE", "CUSTOMER_RETENTION"]])
+                
+                # Score: objectives_met * 1000 - rule_count * 10 + revenue_impact
+                score = objectives_met * 1000 - len(combo) * 10 + combined_revenue_pct
+                
+                all_combinations.append({
+                    "rules": [r["rule_id"] for r in combo],
+                    "rule_names": [r["rule_name"] for r in combo],
+                    "rule_count": len(combo),
+                    "objectives_achieved": objectives_met,
+                    "revenue_impact_pct": round(combined_revenue_pct, 2),
+                    "affects_objectives": list(all_objectives),
+                    "score": score
+                })
+        
+        # Sort by score and get top 3
+        all_combinations.sort(key=lambda x: x["score"], reverse=True)
+        top_3 = all_combinations[:3]
+        
+        # Step 3: Generate recommendations
+        recommendations = []
+        for idx, combo in enumerate(top_3, 1):
+            recommendations.append({
+                "rank": idx,
+                "name": f"Strategic Recommendation #{idx}",
+                "rules": combo["rules"],
+                "rule_names": combo["rule_names"],
+                "rule_count": combo["rule_count"],
+                "objectives_achieved": combo["objectives_achieved"],
+                "revenue_impact": f"+{combo['revenue_impact_pct']:.1f}%",
+                "affects_objectives": combo["affects_objectives"],
+                "implementation_priority": "HIGH" if combo["objectives_achieved"] == 4 else "MEDIUM",
+                "explanation": f"Implement {combo['rule_count']} pricing rules to achieve {combo['objectives_achieved']}/4 business objectives with {combo['revenue_impact_pct']:.1f}% revenue impact."
+            })
+        
+        result = {
+            "summary": {
+                "total_rules_analyzed": len(rules_list),
+                "total_combinations_tested": len(all_combinations),
+                "top_recommendations": 3
+            },
+            "recommendations": recommendations
+        }
+        
+        return json.dumps(result)
+        
+    except Exception as e:
+        return json.dumps({"error": f"Error generating strategic recommendations: {str(e)}", "recommendations": []})
+
+
+@tool
 def query_strategy_knowledge(query: str, n_results: int = 10) -> str:
     """
     Query strategy knowledge and business rules (PRIMARY RAG source).
@@ -630,7 +1060,10 @@ try:
             # ChromaDB RAG tools (for strategic context only)
             query_strategy_knowledge,
             query_recent_events,
-            # Recommendation generation
+            # Rule simulation and optimization (NEW)
+            simulate_pricing_rule_impact,
+            generate_strategic_recommendations,  # Combined tool (NEW)
+            # Legacy recommendation generation (for backward compatibility)
             generate_strategic_recommendation
         ],
         system_prompt=(

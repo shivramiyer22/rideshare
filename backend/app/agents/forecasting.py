@@ -311,9 +311,10 @@ def generate_multidimensional_forecast(periods: int = 30) -> str:
     - Demand_Profile (HIGH, MEDIUM, LOW)
     - Pricing_Model (CONTRACTED, STANDARD, CUSTOM)
     - Location_Category (Urban, Suburban, Rural)
-    - Time_of_Ride (Morning, Afternoon, Evening, Night)
     
-    Total possible segments: 3 × 2 × 3 × 3 × 3 × 4 = 648 segments
+    Note: Time_of_Ride dimension removed - Demand_Profile already captures time-based patterns.
+    
+    Total possible segments: 3 × 2 × 3 × 3 × 3 = 162 segments
     
     For segments with insufficient data (< 3 historical rides), aggregated forecasts are used.
     
@@ -333,14 +334,13 @@ def generate_multidimensional_forecast(periods: int = 30) -> str:
         db = client[settings.mongodb_db_name]
         hwco_collection = db["historical_rides"]
         
-        # Define dimensions
+        # Define dimensions (Time_of_Ride removed - Demand_Profile captures time patterns)
         dimensions = {
             "Customer_Loyalty_Status": ["Gold", "Silver", "Regular"],
             "Vehicle_Type": ["Premium", "Economy"],
             "Demand_Profile": ["HIGH", "MEDIUM", "LOW"],
             "Pricing_Model": ["CONTRACTED", "STANDARD", "CUSTOM"],
-            "Location_Category": ["Urban", "Suburban", "Rural"],
-            "Time_of_Ride": ["Morning", "Afternoon", "Evening", "Night"]
+            "Location_Category": ["Urban", "Suburban", "Rural"]
         }
         
         # Query all historical rides
@@ -352,7 +352,7 @@ def generate_multidimensional_forecast(periods: int = 30) -> str:
         
         segmented_forecasts = []
         aggregated_forecasts = []
-        total_possible = 3 * 2 * 3 * 3 * 3 * 4  # 648 segments
+        total_possible = 3 * 2 * 3 * 3 * 3  # 162 segments (removed Time_of_Ride)
         
         # Generate forecasts for each segment combination
         for loyalty in dimensions["Customer_Loyalty_Status"]:
@@ -360,17 +360,15 @@ def generate_multidimensional_forecast(periods: int = 30) -> str:
                 for demand in dimensions["Demand_Profile"]:
                     for pricing in dimensions["Pricing_Model"]:
                         for location in dimensions["Location_Category"]:
-                            for time_period in dimensions["Time_of_Ride"]:
-                                # Filter rides for this specific segment
-                                segment_rides = [
-                                    r for r in all_rides
-                                    if r.get("Customer_Loyalty_Status") == loyalty
-                                    and r.get("Vehicle_Type") == vehicle
-                                    and r.get("Demand_Profile") == demand
-                                    and r.get("Pricing_Model") == pricing
-                                    and r.get("Location_Category") == location
-                                    and r.get("Time_of_Ride") == time_period
-                                ]
+                            # Filter rides for this specific segment (Time_of_Ride removed)
+                            segment_rides = [
+                                r for r in all_rides
+                                if r.get("Customer_Loyalty_Status") == loyalty
+                                and r.get("Vehicle_Type") == vehicle
+                                and r.get("Demand_Profile") == demand
+                                and r.get("Pricing_Model") == pricing
+                                and r.get("Location_Category") == location
+                            ]
                                 
                                 ride_count = len(segment_rides)
                                 
@@ -394,8 +392,7 @@ def generate_multidimensional_forecast(periods: int = 30) -> str:
                                             "vehicle_type": vehicle,
                                             "demand_profile": demand,
                                             "pricing_model": pricing,
-                                            "location": location,
-                                            "time_period": time_period
+                                            "location": location
                                         },
                                         "baseline_metrics": {
                                             "historical_ride_count": ride_count,
@@ -421,11 +418,10 @@ def generate_multidimensional_forecast(periods: int = 30) -> str:
                                 
                                 elif ride_count > 0:
                                     # Sparse data - use aggregated forecast
-                                    # Aggregate to broader segment (e.g., location + time_period only)
+                                    # Aggregate to broader segment (location + vehicle only)
                                     aggregated_rides = [
                                         r for r in all_rides
                                         if r.get("Location_Category") == location
-                                        and r.get("Time_of_Ride") == time_period
                                         and r.get("Vehicle_Type") == vehicle
                                     ]
                                     
@@ -446,8 +442,7 @@ def generate_multidimensional_forecast(periods: int = 30) -> str:
                                                 "vehicle_type": vehicle,
                                                 "demand_profile": demand,
                                                 "pricing_model": pricing,
-                                                "location": location,
-                                                "time_period": time_period
+                                                "location": location
                                             },
                                             "baseline_metrics": {
                                                 "historical_ride_count": ride_count,
