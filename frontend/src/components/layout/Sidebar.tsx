@@ -11,11 +11,13 @@ import {
   Settings,
   X,
   Upload,
+  ShoppingCart,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export type TabType =
   | 'overview'
+  | 'orders'
   | 'pricing'
   | 'forecasting'
   | 'market'
@@ -32,6 +34,7 @@ interface SidebarProps {
 
 const menuItems = [
   { id: 'overview' as TabType, label: 'Overview', icon: LayoutDashboard },
+  { id: 'orders' as TabType, label: 'Create Order', icon: ShoppingCart },
   { id: 'pricing' as TabType, label: 'Pricing Engine', icon: DollarSign },
   { id: 'forecasting' as TabType, label: 'Forecasting', icon: TrendingUp },
   { id: 'market' as TabType, label: 'Market Signals', icon: Radio },
