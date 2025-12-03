@@ -14,7 +14,8 @@
 'use client';
 
 import React from 'react';
-import PriorityQueueViz from '@/components/queue/PriorityQueueViz';
+// import PriorityQueueViz from '@/components/queue/PriorityQueueViz'; // Real version (needs backend)
+import PriorityQueueVizMock from '@/components/queue/PriorityQueueVizMock'; // Demo version (works without backend)
 
 export function QueueTab() {
   return (
@@ -29,8 +30,8 @@ export function QueueTab() {
         </p>
       </div>
 
-      {/* Priority Queue Visualization */}
-      <PriorityQueueViz
+      {/* Priority Queue Visualization - DEMO MODE */}
+      <PriorityQueueVizMock
         autoRefresh={true}
         refreshInterval={5000}
         maxOrdersPerQueue={50}

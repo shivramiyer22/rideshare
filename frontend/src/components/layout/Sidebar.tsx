@@ -3,7 +3,6 @@
 import React from 'react';
 import {
   LayoutDashboard,
-  DollarSign,
   TrendingUp,
   Radio,
   Activity,
@@ -18,7 +17,6 @@ import { cn } from '@/lib/utils';
 export type TabType =
   | 'overview'
   | 'orders'
-  | 'pricing'
   | 'forecasting'
   | 'market'
   | 'elasticity'
@@ -35,7 +33,6 @@ interface SidebarProps {
 const menuItems = [
   { id: 'overview' as TabType, label: 'Overview', icon: LayoutDashboard },
   { id: 'orders' as TabType, label: 'Create Order', icon: ShoppingCart },
-  { id: 'pricing' as TabType, label: 'Pricing Engine', icon: DollarSign },
   { id: 'forecasting' as TabType, label: 'Forecasting', icon: TrendingUp },
   { id: 'market' as TabType, label: 'Market Signals', icon: Radio },
   { id: 'elasticity' as TabType, label: 'Analysis', icon: Activity },

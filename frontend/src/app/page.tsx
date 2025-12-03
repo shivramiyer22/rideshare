@@ -6,7 +6,6 @@ import { Header } from '@/components/layout/Header';
 import { AIPanel } from '@/components/layout/AIPanel';
 import { OverviewTab } from '@/components/tabs/OverviewTab';
 import { OrdersTab } from '@/components/tabs/OrdersTab';
-import { PricingTab } from '@/components/tabs/PricingTab';
 import { ForecastingTab } from '@/components/tabs/ForecastingTab';
 import { MarketSignalsTab } from '@/components/tabs/MarketSignalsTab';
 import { ElasticityTab } from '@/components/tabs/ElasticityTab';
@@ -23,8 +22,6 @@ export default function Home() {
         return <OverviewTab />;
       case 'orders':
         return <OrdersTab />;
-      case 'pricing':
-        return <PricingTab />;
       case 'forecasting':
         return <ForecastingTab />;
       case 'market':
