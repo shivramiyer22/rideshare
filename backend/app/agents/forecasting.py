@@ -17,13 +17,244 @@ from typing import Dict, Any, List
 from datetime import datetime
 import asyncio
 import json
-from app.agents.utils import query_chromadb, fetch_mongodb_documents, format_documents_as_context
+from app.agents.utils import (
+    query_chromadb, 
+    fetch_mongodb_documents, 
+    format_documents_as_context,
+    query_historical_rides,
+    query_events_data,
+    query_traffic_data,
+    query_news_data
+)
 from app.forecasting_ml import RideshareForecastModel
 from app.config import settings
 
 
 # Initialize forecasting model instance
 forecast_model = RideshareForecastModel()
+
+
+@tool
+def get_historical_demand_data(
+    month: str = "",
+    pricing_model: str = "",
+    limit: int = 100
+) -> str:
+    """
+    Query actual historical ride demand data from MongoDB.
+    
+    Use this tool to understand past demand patterns for forecasting.
+    Returns ride counts, prices, and timing patterns from actual data.
+    
+    Args:
+        month: Month name (e.g., "November") or number (1-12). Empty for all.
+        pricing_model: "CONTRACTED", "STANDARD", or "CUSTOM". Empty for all.
+        limit: Maximum records (default: 100)
+    
+    Returns:
+        str: JSON string with historical demand statistics
+    """
+    try:
+        results = query_historical_rides(
+            month=month,
+            pricing_model=pricing_model,
+            limit=limit
+        )
+        
+        if not results:
+            return json.dumps({"error": "No historical data found", "count": 0})
+        
+        # Analyze demand patterns
+        by_time = {}
+        by_location = {}
+        by_model = {}
+        
+        for r in results:
+            # By time of day
+            time = r.get("Time_of_Ride", "Unknown")
+            if time not in by_time:
+                by_time[time] = {"count": 0, "total_revenue": 0}
+            by_time[time]["count"] += 1
+            by_time[time]["total_revenue"] += r.get("Historical_Cost_of_Ride", 0)
+            
+            # By location
+            loc = r.get("Location_Category", "Unknown")
+            if loc not in by_location:
+                by_location[loc] = {"count": 0, "total_revenue": 0}
+            by_location[loc]["count"] += 1
+            by_location[loc]["total_revenue"] += r.get("Historical_Cost_of_Ride", 0)
+            
+            # By pricing model
+            model = r.get("Pricing_Model", "Unknown")
+            if model not in by_model:
+                by_model[model] = {"count": 0, "total_revenue": 0}
+            by_model[model]["count"] += 1
+            by_model[model]["total_revenue"] += r.get("Historical_Cost_of_Ride", 0)
+        
+        # Calculate averages
+        for time in by_time:
+            by_time[time]["avg_revenue"] = round(by_time[time]["total_revenue"] / by_time[time]["count"], 2)
+        for loc in by_location:
+            by_location[loc]["avg_revenue"] = round(by_location[loc]["total_revenue"] / by_location[loc]["count"], 2)
+        for model in by_model:
+            by_model[model]["avg_revenue"] = round(by_model[model]["total_revenue"] / by_model[model]["count"], 2)
+        
+        total_revenue = sum(r.get("Historical_Cost_of_Ride", 0) for r in results)
+        
+        return json.dumps({
+            "total_rides": len(results),
+            "total_revenue": round(total_revenue, 2),
+            "avg_revenue_per_ride": round(total_revenue / len(results), 2) if results else 0,
+            "by_time_of_day": by_time,
+            "by_location": by_location,
+            "by_pricing_model": by_model
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error querying historical data: {str(e)}"})
+
+
+@tool
+def get_upcoming_events(
+    event_type: str = "",
+    location: str = "",
+    limit: int = 20
+) -> str:
+    """
+    Query actual events data from MongoDB (n8n Eventbrite integration).
+    
+    Use this tool to find events that may affect future demand.
+    Events like concerts, sports games, conferences impact ride demand.
+    
+    Args:
+        event_type: Filter by type (e.g., "concert", "sports"). Empty for all.
+        location: Filter by venue/location. Empty for all.
+        limit: Maximum records (default: 20)
+    
+    Returns:
+        str: JSON string with upcoming events that affect demand
+    """
+    try:
+        results = query_events_data(
+            event_type=event_type,
+            location=location,
+            limit=limit
+        )
+        
+        if not results:
+            return json.dumps({"message": "No events found", "events": [], "count": 0})
+        
+        # Format events for forecasting context
+        formatted_events = []
+        for event in results:
+            formatted_events.append({
+                "name": event.get("name") or event.get("title", "Unknown Event"),
+                "date": str(event.get("event_date") or event.get("date", "Unknown")),
+                "venue": event.get("venue") or event.get("location", "Unknown"),
+                "type": event.get("event_type") or event.get("category", "Unknown"),
+                "expected_attendance": event.get("expected_attendance", "Unknown"),
+                "demand_impact": event.get("demand_impact", "High")  # Most events = high impact
+            })
+        
+        return json.dumps({
+            "count": len(formatted_events),
+            "events": formatted_events,
+            "summary": f"Found {len(formatted_events)} events that may affect demand"
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error querying events: {str(e)}"})
+
+
+@tool
+def get_traffic_conditions(
+    location: str = "",
+    limit: int = 20
+) -> str:
+    """
+    Query actual traffic data from MongoDB (n8n Google Maps integration).
+    
+    Use this tool to understand current/recent traffic conditions.
+    Traffic affects ride duration and surge pricing decisions.
+    
+    Args:
+        location: Filter by location. Empty for all.
+        limit: Maximum records (default: 20)
+    
+    Returns:
+        str: JSON string with traffic conditions data
+    """
+    try:
+        results = query_traffic_data(
+            location=location,
+            limit=limit
+        )
+        
+        if not results:
+            return json.dumps({"message": "No traffic data found", "conditions": [], "count": 0})
+        
+        # Format traffic data
+        formatted_traffic = []
+        for t in results:
+            formatted_traffic.append({
+                "location": t.get("location", "Unknown"),
+                "timestamp": str(t.get("timestamp", "Unknown")),
+                "congestion_level": t.get("congestion_level") or t.get("traffic_level", "Unknown"),
+                "average_speed": t.get("average_speed", "Unknown"),
+                "delay_minutes": t.get("delay_minutes") or t.get("delay", 0)
+            })
+        
+        return json.dumps({
+            "count": len(formatted_traffic),
+            "traffic_conditions": formatted_traffic,
+            "summary": f"Traffic data for {len(formatted_traffic)} locations"
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error querying traffic: {str(e)}"})
+
+
+@tool
+def get_industry_news(
+    topic: str = "",
+    limit: int = 10
+) -> str:
+    """
+    Query actual rideshare news from MongoDB (n8n NewsAPI integration).
+    
+    Use this tool to understand industry trends that may affect forecasts.
+    News about competitors, regulations, or market changes impact demand.
+    
+    Args:
+        topic: Filter by topic/keyword. Empty for all.
+        limit: Maximum articles (default: 10)
+    
+    Returns:
+        str: JSON string with industry news
+    """
+    try:
+        results = query_news_data(
+            topic=topic,
+            limit=limit
+        )
+        
+        if not results:
+            return json.dumps({"message": "No news found", "articles": [], "count": 0})
+        
+        # Format news for context
+        formatted_news = []
+        for article in results:
+            formatted_news.append({
+                "title": article.get("title", "No title"),
+                "published": str(article.get("published_at") or article.get("date", "Unknown")),
+                "source": article.get("source", "Unknown"),
+                "summary": (article.get("summary") or article.get("description", ""))[:200]
+            })
+        
+        return json.dumps({
+            "count": len(formatted_news),
+            "articles": formatted_news,
+            "summary": f"Found {len(formatted_news)} relevant industry news articles"
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error querying news: {str(e)}"})
 
 
 @tool
@@ -308,7 +539,14 @@ try:
     forecasting_agent = create_agent(
         model="openai:gpt-4o-mini",
         tools=[
+            # MongoDB direct query tools (for ACTUAL data)
+            get_historical_demand_data,
+            get_upcoming_events,
+            get_traffic_conditions,
+            get_industry_news,
+            # ChromaDB RAG tools (for similar scenarios)
             query_event_context,
+            # ML forecasting tools
             generate_prophet_forecast,
             explain_forecast
         ],
@@ -317,26 +555,35 @@ try:
             "Your role is to predict future demand, analyze trends, "
             "and provide accurate forecasts using Prophet ML models and external data. "
             "\n\n"
+            "IMPORTANT TOOL SELECTION: "
+            "- For ACTUAL historical demand patterns: use get_historical_demand_data "
+            "- For ACTUAL upcoming events: use get_upcoming_events "
+            "- For ACTUAL traffic conditions: use get_traffic_conditions "
+            "- For ACTUAL industry news: use get_industry_news "
+            "- For RAG-based event search: use query_event_context "
+            "- For ML forecasts: use generate_prophet_forecast "
+            "- For explanations: use explain_forecast "
+            "\n\n"
             "Key responsibilities: "
             "- Generate 30/60/90-day demand forecasts using Prophet ML "
-            "- Analyze n8n ingested data (events, traffic) for context "
+            "- Query ACTUAL data from MongoDB (events, traffic, news) "
             "- Explain forecasts in natural language using OpenAI GPT-4 "
             "- Provide confidence intervals and trend analysis "
             "\n\n"
             "When generating forecasts: "
-            "- Use generate_prophet_forecast for Prophet ML predictions "
-            "- Query event_context to understand external factors (events, traffic) "
-            "  (returns context_string, events_detected, traffic_patterns) "
-            "- Use explain_forecast to provide natural language explanations via OpenAI GPT-4 "
-            "- Combine Prophet predictions with event context for comprehensive forecasts "
+            "1. First query actual data: get_upcoming_events, get_traffic_conditions "
+            "2. Use get_historical_demand_data to understand past patterns "
+            "3. Use generate_prophet_forecast for ML predictions "
+            "4. Use explain_forecast to provide natural language explanations "
+            "5. Combine all data sources for comprehensive forecasts "
             "\n\n"
             "Return format should include: "
             "- forecast: List of forecast points with predicted_demand, confidence intervals "
             "- explanation: Natural language explanation from OpenAI GPT-4 "
             "- method: 'prophet_ml' "
-            "- context: {events_detected, traffic_patterns} from n8n data "
+            "- context: {events_detected, traffic_patterns} from actual MongoDB data "
             "\n\n"
-            "Always explain how external events (from n8n) might affect the forecast."
+            "Always include ACTUAL data from MongoDB in your analysis, not just RAG results."
         ),
         name="forecasting_agent"
     )

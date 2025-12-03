@@ -17,8 +17,239 @@ from langchain.tools import tool
 from typing import Dict, Any, List
 import asyncio
 import json
-from app.agents.utils import query_chromadb, fetch_mongodb_documents, format_documents_as_context
+from app.agents.utils import (
+    query_chromadb, 
+    fetch_mongodb_documents, 
+    format_documents_as_context,
+    query_historical_rides,
+    query_competitor_prices,
+    query_events_data,
+    query_traffic_data,
+    query_news_data,
+    get_mongodb_collection_stats
+)
 from app.config import settings
+
+
+@tool
+def get_performance_metrics(
+    month: str = "",
+    pricing_model: str = ""
+) -> str:
+    """
+    Query actual HWCO performance metrics from MongoDB.
+    
+    Use this tool to get real revenue, ride counts, and pricing data
+    for making strategic recommendations.
+    
+    Args:
+        month: Month name (e.g., "November") or number. Empty for all.
+        pricing_model: "CONTRACTED", "STANDARD", or "CUSTOM". Empty for all.
+    
+    Returns:
+        str: JSON string with performance metrics
+    """
+    try:
+        results = query_historical_rides(
+            month=month,
+            pricing_model=pricing_model,
+            limit=1000  # Get more data for accurate metrics
+        )
+        
+        if not results:
+            return json.dumps({"error": "No performance data found", "count": 0})
+        
+        # Calculate key metrics
+        total_revenue = sum(r.get("Historical_Cost_of_Ride", 0) for r in results)
+        total_rides = len(results)
+        avg_price = total_revenue / total_rides if total_rides > 0 else 0
+        
+        # By pricing model
+        by_model = {}
+        for r in results:
+            model = r.get("Pricing_Model", "UNKNOWN")
+            if model not in by_model:
+                by_model[model] = {"count": 0, "revenue": 0}
+            by_model[model]["count"] += 1
+            by_model[model]["revenue"] += r.get("Historical_Cost_of_Ride", 0)
+        
+        # By location
+        by_location = {}
+        for r in results:
+            loc = r.get("Location_Category", "Unknown")
+            if loc not in by_location:
+                by_location[loc] = {"count": 0, "revenue": 0}
+            by_location[loc]["count"] += 1
+            by_location[loc]["revenue"] += r.get("Historical_Cost_of_Ride", 0)
+        
+        # By customer tier
+        by_tier = {}
+        for r in results:
+            tier = r.get("Customer_Loyalty_Status", "Regular")
+            if tier not in by_tier:
+                by_tier[tier] = {"count": 0, "revenue": 0}
+            by_tier[tier]["count"] += 1
+            by_tier[tier]["revenue"] += r.get("Historical_Cost_of_Ride", 0)
+        
+        return json.dumps({
+            "total_rides": total_rides,
+            "total_revenue": round(total_revenue, 2),
+            "average_price_per_ride": round(avg_price, 2),
+            "by_pricing_model": by_model,
+            "by_location": by_location,
+            "by_customer_tier": by_tier
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error getting metrics: {str(e)}"})
+
+
+@tool
+def get_competitor_comparison() -> str:
+    """
+    Query actual competitor data from MongoDB and compare with HWCO.
+    
+    Use this tool to understand competitive positioning and pricing gaps.
+    Returns comparison of HWCO vs competitor (Lyft) metrics.
+    
+    Returns:
+        str: JSON string with competitive analysis
+    """
+    try:
+        # Get HWCO data from historical_rides
+        hwco_data = query_historical_rides(limit=500)
+        # Get competitor data from competitor_prices
+        competitor_data = query_competitor_prices(limit=500)
+        
+        if not hwco_data and not competitor_data:
+            return json.dumps({"error": "No data found for comparison"})
+        
+        # Calculate HWCO metrics - use Historical_Cost_of_Ride field
+        hwco_prices = [float(r.get("Historical_Cost_of_Ride", 0)) for r in hwco_data if r.get("Historical_Cost_of_Ride")]
+        hwco_avg = sum(hwco_prices) / len(hwco_prices) if hwco_prices else 0
+        hwco_total = sum(hwco_prices)
+        
+        # Calculate competitor metrics - also uses Historical_Cost_of_Ride field
+        comp_prices = []
+        for r in competitor_data:
+            price = r.get("Historical_Cost_of_Ride") or r.get("price", 0)
+            if price:
+                comp_prices.append(float(price))
+        
+        comp_avg = sum(comp_prices) / len(comp_prices) if comp_prices else 0
+        comp_total = sum(comp_prices)
+        
+        # Calculate gap
+        price_gap = ((hwco_avg - comp_avg) / comp_avg * 100) if comp_avg > 0 else 0
+        
+        # By location comparison
+        hwco_by_loc = {}
+        for r in hwco_data:
+            loc = r.get("Location_Category", "Unknown")
+            price = float(r.get("Historical_Cost_of_Ride", 0))
+            if loc not in hwco_by_loc:
+                hwco_by_loc[loc] = {"count": 0, "total": 0}
+            hwco_by_loc[loc]["count"] += 1
+            hwco_by_loc[loc]["total"] += price
+        
+        comp_by_loc = {}
+        for r in competitor_data:
+            loc = r.get("Location_Category", "Unknown")
+            price = float(r.get("Historical_Cost_of_Ride") or r.get("price", 0))
+            if loc not in comp_by_loc:
+                comp_by_loc[loc] = {"count": 0, "total": 0}
+            comp_by_loc[loc]["count"] += 1
+            comp_by_loc[loc]["total"] += price
+        
+        # Calculate averages by location
+        location_comparison = {}
+        for loc in set(list(hwco_by_loc.keys()) + list(comp_by_loc.keys())):
+            hwco_loc_avg = hwco_by_loc.get(loc, {}).get("total", 0) / hwco_by_loc.get(loc, {}).get("count", 1) if hwco_by_loc.get(loc, {}).get("count", 0) > 0 else 0
+            comp_loc_avg = comp_by_loc.get(loc, {}).get("total", 0) / comp_by_loc.get(loc, {}).get("count", 1) if comp_by_loc.get(loc, {}).get("count", 0) > 0 else 0
+            gap = ((hwco_loc_avg - comp_loc_avg) / comp_loc_avg * 100) if comp_loc_avg > 0 else 0
+            location_comparison[loc] = {
+                "hwco_avg": round(hwco_loc_avg, 2),
+                "competitor_avg": round(comp_loc_avg, 2),
+                "gap_percent": round(gap, 2)
+            }
+        
+        return json.dumps({
+            "hwco": {
+                "ride_count": len(hwco_data),
+                "total_revenue": round(hwco_total, 2),
+                "average_price": round(hwco_avg, 2)
+            },
+            "competitor": {
+                "ride_count": len(competitor_data),
+                "total_revenue": round(comp_total, 2),
+                "average_price": round(comp_avg, 2)
+            },
+            "comparison": {
+                "overall_price_gap_percent": round(price_gap, 2),
+                "hwco_is_higher": price_gap > 0,
+                "recommendation": "HWCO is priced higher than competitors" if price_gap > 0 else "HWCO is priced lower than competitors"
+            },
+            "by_location": location_comparison
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error comparing: {str(e)}"})
+
+
+@tool
+def get_market_context() -> str:
+    """
+    Query actual market context from MongoDB (events, traffic, news).
+    
+    Use this tool to understand current market conditions for recommendations.
+    Combines events, traffic, and news data for comprehensive context.
+    
+    Returns:
+        str: JSON string with market context
+    """
+    try:
+        # Get events
+        events = query_events_data(limit=10)
+        # Get traffic
+        traffic = query_traffic_data(limit=10)
+        # Get news
+        news = query_news_data(limit=5)
+        
+        # Format events
+        formatted_events = []
+        for e in events:
+            formatted_events.append({
+                "name": e.get("name") or e.get("title", "Unknown"),
+                "date": str(e.get("event_date") or e.get("date", "Unknown")),
+                "venue": e.get("venue", "Unknown"),
+                "type": e.get("event_type", "Unknown")
+            })
+        
+        # Format traffic summary
+        traffic_summary = []
+        for t in traffic:
+            traffic_summary.append({
+                "location": t.get("location", "Unknown"),
+                "congestion": t.get("congestion_level") or t.get("traffic_level", "Unknown")
+            })
+        
+        # Format news
+        formatted_news = []
+        for n in news:
+            formatted_news.append({
+                "title": n.get("title", "No title"),
+                "date": str(n.get("published_at", "Unknown"))
+            })
+        
+        return json.dumps({
+            "events_count": len(formatted_events),
+            "upcoming_events": formatted_events[:5],
+            "traffic_count": len(traffic_summary),
+            "traffic_conditions": traffic_summary[:5],
+            "news_count": len(formatted_news),
+            "recent_news": formatted_news,
+            "data_availability": get_mongodb_collection_stats()
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error getting market context: {str(e)}"})
 
 
 @tool
@@ -299,9 +530,14 @@ try:
     recommendation_agent = create_agent(
         model="openai:gpt-4o-mini",
         tools=[
+            # MongoDB direct query tools (for ACTUAL data) - USE THESE FIRST!
+            get_performance_metrics,
+            get_competitor_comparison,
+            get_market_context,
+            # ChromaDB RAG tools (for strategic context only)
             query_strategy_knowledge,
             query_recent_events,
-            query_competitor_analysis,
+            # Recommendation generation
             generate_strategic_recommendation
         ],
         system_prompt=(
@@ -310,29 +546,27 @@ try:
             "achieve business objectives: revenue increase (15-25%), customer retention, "
             "and competitive positioning. "
             "\n\n"
-            "Key responsibilities: "
-            "- Analyze strategy knowledge (PRIMARY RAG source) for business rules "
-            "- Analyze recent events from n8n (events, traffic, news) for market context "
-            "- Analyze competitor data for competitive positioning "
-            "- Combine Forecasting Agent predictions with current market data "
-            "- Generate actionable strategic recommendations using OpenAI GPT-4 "
+            "CRITICAL TOOL SELECTION - USE MONGODB TOOLS FIRST: "
+            "- ALWAYS use get_performance_metrics for HWCO revenue/ride data "
+            "- ALWAYS use get_competitor_comparison for HWCO vs competitor pricing "
+            "- ALWAYS use get_market_context for events, traffic, news "
+            "- Only use query_strategy_knowledge for business rules/strategies (ChromaDB) "
+            "- DO NOT use ChromaDB for actual data - use MongoDB tools! "
             "\n\n"
-            "When generating recommendations: "
-            "- ALWAYS start with query_strategy_knowledge (PRIMARY RAG source) "
-            "- Query recent_events to understand current market conditions "
-            "- Query competitor_analysis to understand competitive landscape "
-            "- Optionally get forecast_data from Forecasting Agent (if needed) "
-            "- Use generate_strategic_recommendation to create final recommendations via OpenAI GPT-4 "
-            "- The generate_strategic_recommendation tool returns: "
-            "  recommendation, reasoning, expected_impact, data_sources "
-            "- Focus on revenue goals (15-25% increase) and customer retention "
+            "For 'competitor comparison' or 'HWCO vs competitor' questions: "
+            "→ ALWAYS call get_competitor_comparison FIRST (returns actual MongoDB data) "
             "\n\n"
-            "Example workflow: "
-            "1. n8n detects Lakers game (via query_recent_events) "
-            "2. Forecasting Agent predicts +45% demand "
-            "3. Generate recommendation: surge pricing 1.7x during game hours to maximize revenue "
+            "For 'performance' or 'revenue' questions: "
+            "→ ALWAYS call get_performance_metrics FIRST "
             "\n\n"
-            "Always provide clear reasoning and expected impact for recommendations."
+            "Key workflow: "
+            "1. Call get_competitor_comparison for HWCO vs competitor data "
+            "2. Call get_performance_metrics for HWCO metrics "
+            "3. Call get_market_context for events/traffic/news "
+            "4. Optionally call query_strategy_knowledge for business rules "
+            "5. Generate recommendations with SPECIFIC NUMBERS from the data "
+            "\n\n"
+            "NEVER give generic responses without first calling the MongoDB tools!"
         ),
         name="recommendation_agent"
     )

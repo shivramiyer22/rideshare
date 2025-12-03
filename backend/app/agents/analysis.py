@@ -23,7 +23,13 @@ import json
 from datetime import datetime, timedelta
 import pymongo
 from app.config import settings
-from app.agents.utils import query_chromadb, format_documents_as_context
+from app.agents.utils import (
+    query_chromadb, 
+    format_documents_as_context,
+    query_events_data,
+    query_traffic_data,
+    query_news_data
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -889,61 +895,355 @@ def analyze_time_patterns() -> str:
 
 
 @tool
-def analyze_event_impact_on_demand(event_data: str) -> str:
+def compare_with_competitors() -> str:
     """
-    Analyze impact of events on demand using n8n ingested events_data.
+    Compare HWCO pricing with competitor pricing from MongoDB.
     
-    This tool analyzes events from n8n Eventbrite workflow to understand
-    how events affect ride demand and pricing opportunities.
-    
-    Args:
-        event_data: Context string from query_news_events tool or event description
+    Queries both historical_rides (HWCO) and competitor_prices (Lyft) collections
+    to calculate and compare average prices, totals, and identify pricing gaps.
     
     Returns:
-        str: Analysis of event impact on demand
+        str: JSON string with HWCO vs competitor comparison including:
+            - HWCO metrics (rides, revenue, avg price)
+            - Competitor metrics (rides, revenue, avg price)
+            - Price gap percentage
+            - Breakdown by location
     """
-    if not event_data or event_data == "No similar events or news found.":
-        return "No event data available for analysis."
-    
-    return f"Event analysis: {event_data[:200]}... Impact on demand: Events typically increase demand by 20-40% during peak hours. Consider surge pricing during event times."
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        
+        try:
+            # Get HWCO data from historical_rides
+            hwco_collection = db["historical_rides"]
+            hwco_data = list(hwco_collection.find({}).limit(500))
+            
+            # Get competitor data from competitor_prices
+            comp_collection = db["competitor_prices"]
+            comp_data = list(comp_collection.find({}).limit(500))
+        finally:
+            client.close()
+        
+        if not hwco_data and not comp_data:
+            return json.dumps({"error": "No data found for comparison", "hwco_count": 0, "competitor_count": 0})
+        
+        # Calculate HWCO metrics
+        hwco_prices = [float(r.get("Historical_Cost_of_Ride", 0)) for r in hwco_data if r.get("Historical_Cost_of_Ride")]
+        hwco_avg = sum(hwco_prices) / len(hwco_prices) if hwco_prices else 0
+        hwco_total = sum(hwco_prices)
+        
+        # Calculate competitor metrics
+        comp_prices = []
+        for r in comp_data:
+            price = r.get("Historical_Cost_of_Ride") or r.get("price", 0)
+            if price:
+                comp_prices.append(float(price))
+        
+        comp_avg = sum(comp_prices) / len(comp_prices) if comp_prices else 0
+        comp_total = sum(comp_prices)
+        
+        # Calculate gap
+        price_gap = ((hwco_avg - comp_avg) / comp_avg * 100) if comp_avg > 0 else 0
+        
+        # By location comparison
+        hwco_by_loc = {}
+        for r in hwco_data:
+            loc = r.get("Location_Category", "Unknown")
+            price = float(r.get("Historical_Cost_of_Ride", 0))
+            if loc not in hwco_by_loc:
+                hwco_by_loc[loc] = {"count": 0, "total": 0}
+            hwco_by_loc[loc]["count"] += 1
+            hwco_by_loc[loc]["total"] += price
+        
+        comp_by_loc = {}
+        for r in comp_data:
+            loc = r.get("Location_Category", "Unknown")
+            price = float(r.get("Historical_Cost_of_Ride") or r.get("price", 0))
+            if loc not in comp_by_loc:
+                comp_by_loc[loc] = {"count": 0, "total": 0}
+            comp_by_loc[loc]["count"] += 1
+            comp_by_loc[loc]["total"] += price
+        
+        # Calculate averages by location
+        location_comparison = {}
+        for loc in set(list(hwco_by_loc.keys()) + list(comp_by_loc.keys())):
+            hwco_loc_avg = hwco_by_loc.get(loc, {}).get("total", 0) / hwco_by_loc.get(loc, {}).get("count", 1) if hwco_by_loc.get(loc, {}).get("count", 0) > 0 else 0
+            comp_loc_avg = comp_by_loc.get(loc, {}).get("total", 0) / comp_by_loc.get(loc, {}).get("count", 1) if comp_by_loc.get(loc, {}).get("count", 0) > 0 else 0
+            gap = ((hwco_loc_avg - comp_loc_avg) / comp_loc_avg * 100) if comp_loc_avg > 0 else 0
+            location_comparison[loc] = {
+                "hwco_avg": round(hwco_loc_avg, 2),
+                "competitor_avg": round(comp_loc_avg, 2),
+                "gap_percent": round(gap, 2)
+            }
+        
+        return json.dumps({
+            "hwco": {
+                "ride_count": len(hwco_data),
+                "total_revenue": round(hwco_total, 2),
+                "average_price": round(hwco_avg, 2)
+            },
+            "competitor": {
+                "ride_count": len(comp_data),
+                "total_revenue": round(comp_total, 2),
+                "average_price": round(comp_avg, 2)
+            },
+            "comparison": {
+                "overall_price_gap_percent": round(price_gap, 2),
+                "hwco_is_higher": price_gap > 0,
+                "summary": f"HWCO avg ${hwco_avg:.2f} vs Competitor avg ${comp_avg:.2f} (gap: {price_gap:.1f}%)"
+            },
+            "by_location": location_comparison
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error comparing with competitors: {str(e)}"})
 
 
 @tool
-def analyze_traffic_patterns(traffic_data: str) -> str:
+def analyze_event_impact_on_demand(event_type: str = "", location: str = "") -> str:
     """
-    Analyze traffic patterns from n8n Google Maps workflow.
+    Query and analyze events from MongoDB to understand demand impact.
     
-    Identifies surge pricing opportunities based on traffic congestion.
+    This tool queries ACTUAL events data from n8n Eventbrite workflow and
+    analyzes how events affect ride demand and pricing opportunities.
     
     Args:
-        traffic_data: Context string from query_news_events tool or traffic description
+        event_type: Filter by event type (e.g., "concert", "sports"). Empty for all.
+        location: Filter by venue/location. Empty for all.
     
     Returns:
-        str: Analysis of traffic patterns and surge pricing opportunities
+        str: JSON analysis of events and their demand impact
     """
-    if not traffic_data or traffic_data == "No similar events or news found.":
-        return "No traffic data available for analysis."
-    
-    return f"Traffic analysis: {traffic_data[:200]}... Surge pricing opportunity: Heavy traffic indicates high demand. Recommend 1.3x-1.6x surge multiplier."
+    try:
+        # Query actual events from MongoDB
+        events = query_events_data(event_type=event_type, location=location, limit=20)
+        
+        if not events:
+            return json.dumps({
+                "message": "No events found in database",
+                "events": [],
+                "demand_impact": "Unable to assess - no data"
+            })
+        
+        # Analyze events
+        formatted_events = []
+        high_impact_events = 0
+        
+        for e in events:
+            event_info = {
+                "name": e.get("name") or e.get("title", "Unknown"),
+                "date": str(e.get("event_date") or e.get("date", "Unknown")),
+                "venue": e.get("venue", "Unknown"),
+                "type": e.get("event_type", "Unknown"),
+                "expected_attendance": e.get("expected_attendance", "Unknown")
+            }
+            formatted_events.append(event_info)
+            
+            # Count high-impact events (sports, concerts tend to have high demand)
+            etype = str(e.get("event_type", "")).lower()
+            if any(t in etype for t in ["concert", "sport", "game", "festival"]):
+                high_impact_events += 1
+        
+        demand_increase = "20-40%" if high_impact_events > 0 else "10-20%"
+        surge_recommendation = "1.5x-2.0x during event hours" if high_impact_events > 2 else "1.3x-1.5x during event hours"
+        
+        return json.dumps({
+            "events_count": len(formatted_events),
+            "events": formatted_events[:10],
+            "high_impact_events": high_impact_events,
+            "demand_impact_estimate": demand_increase,
+            "surge_recommendation": surge_recommendation,
+            "analysis": f"Found {len(formatted_events)} events, {high_impact_events} high-impact. Expected demand increase: {demand_increase}."
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error analyzing events: {str(e)}"})
 
 
 @tool
-def analyze_industry_trends(news_data: str) -> str:
+def analyze_traffic_patterns(location: str = "") -> str:
     """
-    Analyze industry trends from n8n NewsAPI workflow.
+    Query and analyze traffic data from MongoDB for surge pricing opportunities.
     
-    Identifies trends that might affect rideshare demand or pricing strategy.
+    This tool queries ACTUAL traffic data from n8n Google Maps workflow
+    and identifies surge pricing opportunities based on congestion.
     
     Args:
-        news_data: Context string from query_news_events tool or news description
+        location: Filter by location. Empty for all locations.
     
     Returns:
-        str: Analysis of industry trends
+        str: JSON analysis of traffic patterns and surge recommendations
     """
-    if not news_data or news_data == "No similar events or news found.":
-        return "No news data available for analysis."
+    try:
+        # Query actual traffic from MongoDB
+        traffic = query_traffic_data(location=location, limit=30)
+        
+        if not traffic:
+            return json.dumps({
+                "message": "No traffic data found in database",
+                "conditions": [],
+                "surge_recommendation": "Unable to assess - no data"
+            })
+        
+        # Analyze traffic patterns
+        formatted_traffic = []
+        congested_count = 0
+        
+        for t in traffic:
+            congestion = t.get("congestion_level") or t.get("traffic_level", "")
+            traffic_info = {
+                "location": t.get("location", "Unknown"),
+                "timestamp": str(t.get("timestamp", "Unknown")),
+                "congestion_level": congestion,
+                "delay_minutes": t.get("delay_minutes") or t.get("delay", 0)
+            }
+            formatted_traffic.append(traffic_info)
+            
+            # Count congested areas
+            if congestion and any(c in str(congestion).lower() for c in ["heavy", "high", "severe"]):
+                congested_count += 1
+        
+        # Surge pricing recommendation based on congestion
+        if congested_count > len(traffic) * 0.5:
+            surge = "1.5x-1.8x"
+            assessment = "High congestion detected"
+        elif congested_count > len(traffic) * 0.25:
+            surge = "1.3x-1.5x"
+            assessment = "Moderate congestion detected"
+        else:
+            surge = "1.0x-1.2x"
+            assessment = "Normal traffic conditions"
+        
+        return json.dumps({
+            "data_points": len(formatted_traffic),
+            "traffic_conditions": formatted_traffic[:10],
+            "congested_locations": congested_count,
+            "traffic_assessment": assessment,
+            "surge_recommendation": surge,
+            "analysis": f"Analyzed {len(traffic)} traffic reports. {congested_count} show congestion. Recommended surge: {surge}."
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error analyzing traffic: {str(e)}"})
+
+
+@tool
+def analyze_industry_trends(topic: str = "") -> str:
+    """
+    Query and analyze rideshare news from MongoDB for industry trends.
     
-    return f"Industry trends: {news_data[:200]}... Market analysis: Monitor industry news for regulatory changes, competitor moves, or market shifts that could affect demand."
+    This tool queries ACTUAL news data from n8n NewsAPI workflow
+    and identifies trends affecting rideshare demand or strategy.
+    
+    Args:
+        topic: Filter by topic/keyword. Empty for all news.
+    
+    Returns:
+        str: JSON analysis of industry trends
+    """
+    try:
+        # Query actual news from MongoDB
+        news = query_news_data(topic=topic, limit=15)
+        
+        if not news:
+            return json.dumps({
+                "message": "No news found in database",
+                "articles": [],
+                "trends": "Unable to assess - no data"
+            })
+        
+        # Analyze news for trends
+        formatted_news = []
+        topics_found = {}
+        
+        for n in news:
+            title = n.get("title", "")
+            article_info = {
+                "title": title,
+                "published": str(n.get("published_at") or n.get("date", "Unknown")),
+                "source": n.get("source", "Unknown"),
+                "summary": (n.get("summary") or n.get("description", ""))[:150]
+            }
+            formatted_news.append(article_info)
+            
+            # Track topics
+            title_lower = title.lower()
+            if any(w in title_lower for w in ["price", "pricing", "fare"]):
+                topics_found["pricing"] = topics_found.get("pricing", 0) + 1
+            if any(w in title_lower for w in ["regulation", "law", "policy"]):
+                topics_found["regulation"] = topics_found.get("regulation", 0) + 1
+            if any(w in title_lower for w in ["competition", "uber", "lyft", "competitor"]):
+                topics_found["competition"] = topics_found.get("competition", 0) + 1
+            if any(w in title_lower for w in ["demand", "growth", "expand"]):
+                topics_found["demand"] = topics_found.get("demand", 0) + 1
+        
+        # Generate trend summary
+        trend_summary = []
+        if topics_found.get("regulation", 0) > 0:
+            trend_summary.append("Regulatory changes may affect operations")
+        if topics_found.get("competition", 0) > 0:
+            trend_summary.append("Competitive moves in the market")
+        if topics_found.get("pricing", 0) > 0:
+            trend_summary.append("Pricing discussions in the industry")
+        if topics_found.get("demand", 0) > 0:
+            trend_summary.append("Demand patterns changing")
+        
+        return json.dumps({
+            "articles_count": len(formatted_news),
+            "articles": formatted_news[:10],
+            "topics_detected": topics_found,
+            "trend_summary": trend_summary if trend_summary else ["No significant trends detected"],
+            "analysis": f"Analyzed {len(news)} articles. Topics: {topics_found}"
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error analyzing news: {str(e)}"})
+
+
+@tool
+def get_n8n_data_summary() -> str:
+    """
+    Get a summary of all n8n ingested data from MongoDB.
+    
+    This tool provides an overview of events, traffic, and news data
+    available from n8n workflows, helping understand data availability.
+    
+    Returns:
+        str: JSON summary of n8n data collections
+    """
+    try:
+        events = query_events_data(limit=5)
+        traffic = query_traffic_data(limit=5)
+        news = query_news_data(limit=5)
+        
+        # Count totals
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        
+        try:
+            events_count = db["events_data"].count_documents({})
+            traffic_count = db["traffic_data"].count_documents({})
+            news_count = db["rideshare_news"].count_documents({})
+            if news_count == 0:
+                news_count = db["news_articles"].count_documents({})
+        finally:
+            client.close()
+        
+        return json.dumps({
+            "data_summary": {
+                "events_data": {
+                    "total_count": events_count,
+                    "sample": [{"name": e.get("name") or e.get("title", "Unknown")} for e in events]
+                },
+                "traffic_data": {
+                    "total_count": traffic_count,
+                    "sample": [{"location": t.get("location", "Unknown")} for t in traffic]
+                },
+                "news_data": {
+                    "total_count": news_count,
+                    "sample": [{"title": n.get("title", "Unknown")} for n in news]
+                }
+            },
+            "data_available": events_count > 0 or traffic_count > 0 or news_count > 0
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error getting data summary: {str(e)}"})
 
 
 # ============================================================================
@@ -1637,12 +1937,7 @@ try:
     analysis_agent = create_agent(
         model="openai:gpt-4o-mini",
         tools=[
-            # ChromaDB querying tools (RAG)
-            query_ride_scenarios,
-            query_news_events,
-            query_customer_behavior,
-            query_competitor_data,
-            # KPI calculation tools (sync PyMongo)
+            # MongoDB KPI tools (USE THESE FOR ACTUAL DATA) - PRIMARY
             calculate_revenue_kpis,
             calculate_profit_metrics,
             calculate_rides_count,
@@ -1651,10 +1946,17 @@ try:
             analyze_customer_segments,
             analyze_location_performance,
             analyze_time_patterns,
-            # n8n data analysis tools
+            # n8n MongoDB data tools (USE THESE FOR EVENTS/TRAFFIC/NEWS)
             analyze_event_impact_on_demand,
             analyze_traffic_patterns,
             analyze_industry_trends,
+            get_n8n_data_summary,
+            # Competitor comparison
+            compare_with_competitors,
+            # ChromaDB RAG tools (for semantic search only, not actual data)
+            query_ride_scenarios,
+            query_news_events,
+            query_customer_behavior,
             # Structured insights generation
             generate_structured_insights
         ],
@@ -1662,28 +1964,26 @@ try:
             "You are a data analysis specialist for a rideshare company. "
             "Your role is to analyze data, identify patterns, and generate actionable insights. "
             "\n\n"
-            "IMPORTANT TOOL SELECTION RULES: "
-            "- For questions about average price for a SPECIFIC MONTH (e.g., 'November average price', 'January unit price'): "
-            "  ALWAYS use get_monthly_price_statistics(month='November') to get actual data from historical_rides "
-            "- For general KPIs without month filter: use calculate_revenue_kpis "
-            "- For top rides by month: use get_top_revenue_rides(month='November') "
-            "- DO NOT use ChromaDB/RAG tools for questions about specific historical data - use the database tools instead "
+            "CRITICAL - USE MONGODB TOOLS FOR ACTUAL DATA: "
+            "- For monthly price queries: ALWAYS use get_monthly_price_statistics(month='...') "
+            "- For KPIs: use calculate_revenue_kpis, calculate_profit_metrics "
+            "- For competitor comparison: use compare_with_competitors "
+            "- For events: use analyze_event_impact_on_demand (queries MongoDB) "
+            "- For traffic: use analyze_traffic_patterns (queries MongoDB) "
+            "- For news: use analyze_industry_trends (queries MongoDB) "
+            "- For n8n data summary: use get_n8n_data_summary "
             "\n\n"
-            "Key responsibilities: "
-            "- Calculate KPIs: revenue, profit, rides count, customer segments "
-            "- Analyze patterns: location performance, time patterns, demand trends "
-            "- Query historical data: monthly statistics, top revenue rides, customer behavior "
-            "- Analyze n8n ingested data: events (demand impact), traffic (surge pricing), news (industry trends) "
-            "- Query ChromaDB for similar past scenarios using RAG (for strategy/context, NOT historical data) "
-            "- Generate structured insights using OpenAI GPT-4 "
+            "DO NOT use ChromaDB/RAG tools (query_ride_scenarios, query_news_events, etc.) "
+            "for questions about ACTUAL DATA. Only use ChromaDB for semantic/context searches. "
             "\n\n"
-            "Workflow for analytics queries: "
-            "1. For MONTHLY data (e.g., 'November average price'): use get_monthly_price_statistics(month='...')  "
-            "2. For general KPIs: use calculate_revenue_kpis, calculate_profit_metrics, etc. "
-            "3. For top rides: use get_top_revenue_rides "
-            "4. For customer analysis: use analyze_customer_segments "
-            "5. For patterns: use analyze_location_performance and analyze_time_patterns "
-            "6. Generate insights combining all data "
+            "Key workflow: "
+            "1. For 'November average price': use get_monthly_price_statistics(month='November') "
+            "2. For 'competitor comparison': use compare_with_competitors "
+            "3. For 'events affecting demand': use analyze_event_impact_on_demand() "
+            "4. For 'traffic patterns': use analyze_traffic_patterns() "
+            "5. For 'industry news': use analyze_industry_trends() "
+            "\n\n"
+            "ALWAYS return ACTUAL NUMBERS from the MongoDB data!"
             "\n\n"
             "Always provide clear, data-driven answers with ACTUAL NUMBERS from the database. "
             "Help achieve business objectives: revenue increase 15-25%, customer retention, competitive positioning."
