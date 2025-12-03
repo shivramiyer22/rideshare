@@ -130,7 +130,8 @@ forecast = model.forecast("STANDARD", periods=30)  # 30, 60, or 90 days
 ```
 
 ### 3. 6 AI Agents Architecture
-All agents use **LangChain v1.0+** with OpenAI GPT-4 and ChromaDB RAG:
+
+All agents use **LangChain v1.0+** with OpenAI GPT-4o-mini and direct MongoDB access for actual data:
 
 **LangChain v1.0+ Compatibility:**
 - All agents use `create_agent()` from `langchain.agents` (v1.0 API)
@@ -139,121 +140,383 @@ All agents use **LangChain v1.0+** with OpenAI GPT-4 and ChromaDB RAG:
 - No deprecated v0.x patterns (LCEL, create_react_agent, etc.)
 - Compatible with LangChain 1.0+, LangGraph 1.0+, and all related packages
 
-- **Data Ingestion Agent:** MongoDB → ChromaDB embeddings
-  - Monitors all MongoDB collections via change streams
-  - Creates embeddings using OpenAI text-embedding-3-small
-  - Stores in 5 ChromaDB collections with mongodb_id metadata
+**MongoDB Query Tools (Shared):**
+All agents have access to dedicated MongoDB query tools in `app/agents/utils.py`:
+- `query_historical_rides()` - Query HWCO ride data with filters (month, pricing_model, location)
+- `query_competitor_prices()` - Query competitor (Lyft) pricing data
+- `query_events_data()` - Query n8n Eventbrite events
+- `query_traffic_data()` - Query n8n Google Maps traffic
+- `query_news_data()` - Query n8n NewsAPI news
+- `get_mongodb_collection_stats()` - Get data availability overview
 
-- **Chatbot Orchestrator Agent:** Routes user queries to worker agents
-  - Tools: `route_to_analysis_agent`, `route_to_pricing_agent`, `route_to_forecasting_agent`, `route_to_recommendation_agent`
-  - Uses OpenAI function calling for intelligent routing
+---
 
-- **Analysis Agent:** Business intelligence, KPIs, analytics (REFACTORED: Sync PyMongo)
-  - **KPI Tools:** `calculate_revenue_kpis`, `calculate_profit_metrics`, `calculate_rides_count`, `analyze_customer_segments`
-  - **Pattern Analysis:** `analyze_location_performance`, `analyze_time_patterns`, `get_top_revenue_rides`
-  - **RAG Tools:** `query_ride_scenarios`, `query_news_events`, `query_customer_behavior`, `query_competitor_data`
-  - **n8n Analysis:** `analyze_event_impact_on_demand`, `analyze_traffic_patterns`, `analyze_industry_trends`
-  - **Insights:** `generate_structured_insights` (OpenAI GPT-4)
-  - **IMPORTANT:** Uses synchronous PyMongo for reliable database access from LangChain tools
+#### 1. Data Ingestion Agent
+**Location:** `app/agents/data_ingestion.py`
 
-- **Pricing Agent:** Dynamic price calculation with OpenAI GPT-4 explanations
-  - Tools: `query_similar_pricing_scenarios`, `query_pricing_strategies`, `calculate_price_with_explanation`
-  - Uses PricingEngine for calculations
-  - **Enhanced:** Generates natural language explanations using OpenAI GPT-4
-  - Returns: `final_price`, `breakdown`, `explanation` (GPT-4), `pricing_model`, `revenue_score`
-  - Explains pricing decisions by referencing similar past scenarios from ChromaDB
+**Purpose:** Monitors MongoDB change streams and creates ChromaDB embeddings for semantic search
 
-- **Forecasting Agent:** Prophet ML predictions + n8n data analysis with OpenAI GPT-4
-  - Tools: `query_event_context`, `generate_prophet_forecast`, `explain_forecast`
-  - Combines Prophet ML forecasts with n8n event context (events, traffic patterns)
-  - **Enhanced:** Generates natural language explanations using OpenAI GPT-4
-  - Returns: `forecast`, `explanation` (GPT-4), `method` ("prophet_ml"), `context` (events_detected, traffic_patterns)
-  - Analyzes external factors (events, traffic) that might affect demand
+**Inputs:**
+- MongoDB collections: ride_orders, events_data, traffic_data, news_articles, customers, historical_rides, competitor_prices
 
-- **Recommendation Agent:** Strategic advice using RAG + n8n data + Forecasting Agent predictions
-  - Tools: `query_strategy_knowledge` (PRIMARY RAG source), `query_recent_events`, `query_competitor_analysis`, `generate_strategic_recommendation`
-  - **Enhanced:** Generates strategic recommendations using OpenAI GPT-4
-  - **Enhanced:** Integrates Forecasting Agent predictions for future demand insights
-  - Focuses on revenue goals (15-25% increase)
-  - Returns: `recommendation` (GPT-4), `reasoning`, `expected_impact`, `data_sources` (mongodb_ids)
-  - Uses strategy_knowledge_vectors as primary RAG source
+**Functionality:**
+- Monitors ALL MongoDB collections via change streams
+- Generates text descriptions for each document
+- Creates OpenAI embeddings (text-embedding-3-small, 1536 dimensions)
+- Stores in 5 ChromaDB collections with metadata (mongodb_id, collection, timestamp)
+- Runs as standalone process (not part of FastAPI)
+
+**Outputs:**
+- 5 ChromaDB collections with embeddings:
+  - `ride_scenarios_vectors`
+  - `news_events_vectors`
+  - `customer_behavior_vectors`
+  - `strategy_knowledge_vectors`
+  - `competitor_analysis_vectors`
+
+**Run Command:**
+```bash
+python app/agents/data_ingestion.py
+```
+
+---
+
+#### 2. Chatbot Orchestrator Agent
+**Location:** `app/agents/orchestrator.py`
+
+**Purpose:** Routes user queries to appropriate specialist agents using OpenAI function calling
+
+**Inputs:**
+- User message (string)
+- Conversation context (thread_id)
+
+**Tools:**
+- `route_to_analysis_agent` - For revenue, analytics, KPIs, historical data
+- `route_to_pricing_agent` - For price calculations, competitor pricing
+- `route_to_forecasting_agent` - For demand forecasts, predictions
+- `route_to_recommendation_agent` - For strategic recommendations, HWCO vs competitor
+
+**Functionality:**
+- Uses GPT-4o-mini for intelligent query routing
+- Maintains conversation context via InMemorySaver
+- Can call multiple agents sequentially for complex queries
+- Synthesizes responses from multiple agents
+
+**Outputs:**
+- Routed query results from specialist agents
+- Synthesized responses when multiple agents are involved
+- Updated conversation context
+
+---
+
+#### 3. Analysis Agent
+**Location:** `app/agents/analysis.py`
+
+**Purpose:** Business intelligence, KPIs, analytics, and data analysis using actual MongoDB data
+
+**Inputs:**
+- Query parameters (month, pricing_model, location, time period)
+- Context from other agents (optional)
+
+**MongoDB Tools (Primary):**
+- `calculate_revenue_kpis` - Total revenue, rides, pending orders
+- `calculate_profit_metrics` - Profit margins, costs, profitability
+- `calculate_rides_count` - Ride counts by pricing model
+- `get_monthly_price_statistics` - Average prices by month with breakdowns
+- `get_top_revenue_rides` - Top rides by revenue (filterable by month)
+- `analyze_customer_segments` - Customer distribution by loyalty tier
+- `analyze_location_performance` - Revenue/rides by location
+- `analyze_time_patterns` - Revenue/rides by time of day
+- `compare_with_competitors` - HWCO vs competitor pricing comparison
+- `analyze_event_impact_on_demand` - Events affecting demand (queries MongoDB)
+- `analyze_traffic_patterns` - Traffic conditions for surge pricing (queries MongoDB)
+- `analyze_industry_trends` - News analysis (queries MongoDB)
+- `get_n8n_data_summary` - Overview of n8n data availability
+
+**ChromaDB RAG Tools (Secondary - for semantic search only):**
+- `query_ride_scenarios` - Similar past ride scenarios
+- `query_news_events` - Similar events/news
+- `query_customer_behavior` - Customer patterns
+
+**Functionality:**
+- Queries MongoDB directly for actual data (PRIMARY method)
+- Uses synchronous PyMongo for reliable database access from LangChain tools
+- Generates natural language explanations using GPT-4o-mini
+- Combines KPI data with n8n context (events, traffic, news)
+- Returns structured insights with specific numbers
+
+**Outputs:**
+- JSON with KPI metrics, patterns, and insights
+- Natural language explanations (GPT-4o-mini)
+- Competitor comparisons with location breakdowns
+- Event/traffic/news analysis with recommendations
+
+---
+
+#### 4. Pricing Agent
+**Location:** `app/agents/pricing.py`
+
+**Purpose:** Dynamic price calculation with explanations and historical pricing analysis
+
+**Inputs:**
+- Order data for new rides (pricing_model, distance, duration, location, time, customer tier)
+- Historical pricing queries (month, location, pricing_model)
+
+**MongoDB Tools:**
+- `get_historical_pricing_data` - Actual historical ride prices with statistics
+- `get_competitor_pricing_data` - Competitor pricing by location and model
+
+**ChromaDB RAG Tools:**
+- `query_similar_pricing_scenarios` - Similar past rides
+- `query_pricing_strategies` - Business rules and strategies
+
+**Calculation Tool:**
+- `calculate_price_with_explanation` - Uses PricingEngine + GPT-4o-mini explanations
+
+**Functionality:**
+- Queries MongoDB for actual pricing data
+- Calculates prices using PricingEngine (CONTRACTED/STANDARD/CUSTOM)
+- Generates natural language explanations using GPT-4o-mini
+- References similar past scenarios from ChromaDB
+- Compares with competitor pricing
+
+**Outputs:**
+- `final_price` - Calculated price for new ride
+- `breakdown` - Multipliers and adjustments
+- `explanation` - Natural language explanation (GPT-4o-mini)
+- `pricing_model` - CONTRACTED/STANDARD/CUSTOM
+- `revenue_score` - Priority score
+- Historical pricing statistics (when queried)
+- Competitor pricing analysis (when queried)
+
+---
+
+#### 5. Forecasting Agent
+**Location:** `app/agents/forecasting.py`
+
+**Purpose:** Demand forecasting using Prophet ML with external context from n8n data
+
+**Inputs:**
+- Pricing model (CONTRACTED, STANDARD, CUSTOM)
+- Forecast period (30, 60, or 90 days)
+- Optional filters (event_type, location, topic)
+
+**MongoDB Tools:**
+- `get_historical_demand_data` - Past demand patterns from historical_rides
+- `get_upcoming_events` - Events from n8n Eventbrite (queries MongoDB)
+- `get_traffic_conditions` - Traffic data from n8n Google Maps (queries MongoDB)
+- `get_industry_news` - News from n8n NewsAPI (queries MongoDB)
+
+**ML & Explanation Tools:**
+- `generate_prophet_forecast` - Prophet ML predictions
+- `explain_forecast` - GPT-4o-mini explanations with context
+
+**ChromaDB RAG Tools (Secondary):**
+- `query_event_context` - Similar events (semantic search)
+
+**Functionality:**
+- Queries MongoDB for actual events, traffic, and news data
+- Generates 30/60/90-day forecasts using Prophet ML
+- Combines ML predictions with external context
+- Generates natural language explanations using GPT-4o-mini
+- Includes confidence intervals and trend analysis
+
+**Outputs:**
+- `forecast` - Array of predictions with dates, demand, confidence intervals
+- `explanation` - Natural language explanation (GPT-4o-mini)
+- `method` - "prophet_ml"
+- `context` - Events detected, traffic patterns from MongoDB
+- Historical demand analysis with breakdowns
+
+---
+
+#### 6. Recommendation Agent
+**Location:** `app/agents/recommendation.py`
+
+**Purpose:** Strategic business recommendations using actual data and RAG for context
+
+**Inputs:**
+- Performance period (month, pricing_model)
+- Business objectives (revenue increase 15-25%, retention)
+
+**MongoDB Tools (Primary):**
+- `get_performance_metrics` - HWCO revenue, rides, pricing by location/tier
+- `get_competitor_comparison` - HWCO vs competitor with location breakdowns
+- `get_market_context` - Events, traffic, news from n8n (queries MongoDB)
+
+**ChromaDB RAG Tools (Secondary):**
+- `query_strategy_knowledge` - Business rules and strategies
+- `query_recent_events` - Similar events (semantic search)
+
+**Recommendation Tool:**
+- `generate_strategic_recommendation` - GPT-4o-mini recommendations
+
+**Functionality:**
+- Queries MongoDB first for actual performance and competitor data
+- Combines real data with strategic guidelines from ChromaDB
+- Generates actionable recommendations using GPT-4o-mini
+- Includes expected impact calculations
+- Focuses on revenue goals (15-25% increase)
+
+**Outputs:**
+- `recommendation` - Strategic advice (GPT-4o-mini)
+- `reasoning` - Why this recommendation
+- `expected_impact` - Revenue increase %, confidence level
+- `data_sources` - MongoDB IDs used
+- Performance metrics with specific numbers
+- Competitor comparison with location analysis
+- Market context with events/traffic/news
+
+---
+
+**Agent Communication Flow:**
+```
+User Query → Orchestrator Agent
+                │
+                ├─→ Analysis Agent (MongoDB KPIs + n8n data)
+                ├─→ Pricing Agent (MongoDB pricing + PricingEngine)
+                ├─→ Forecasting Agent (Prophet ML + MongoDB n8n data)
+                └─→ Recommendation Agent (MongoDB performance + ChromaDB strategy)
+                        ↓
+                GPT-4o-mini Synthesis → User Response
+```
+
+**Key Design Principles:**
+1. **MongoDB First:** All agents query MongoDB for actual data, not just ChromaDB
+2. **ChromaDB Secondary:** Used for semantic search and strategy context only
+3. **GPT-4o-mini Explanations:** All agents generate natural language explanations
+4. **Tool Naming:** Clear naming convention (MongoDB tools vs RAG tools)
+5. **Structured Output:** JSON responses with explanations
+
+---
 
 ### 4. Agent Pipeline (NEW)
-- **Location:** `app/pipeline_orchestrator.py`, `app/routers/pipeline.py`
-- **Purpose:** Automated agent pipeline triggered by MongoDB changes
-- **Architecture:**
-  ```
-  MongoDB Changes → Change Tracker → Hourly Scheduler → Pipeline Orchestrator
-                                                              │
-                                                              ▼
-                                               ┌───────────────────────────┐
-                                               │ Check if Retrain Needed   │
-                                               │ (historical_rides or      │
-                                               │  competitor_prices changed)│
-                                               └─────────────┬─────────────┘
-                                                             │
-                                              ┌──────────────┴──────────────┐
-                                              │                             │
-                                              ▼                             ▼
-                                    ┌─────────────────┐         ┌──────────────────┐
-                                    │ Retrain Prophet │         │ Skip Retraining  │
-                                    │ ML Model        │         │ (model up to date)│
-                                    └────────┬────────┘         └────────┬─────────┘
-                                             └──────────┬────────────────┘
-                                                        │
-                         ┌──────────────────────────────┼──────────────────────────────┐
-                         │                              │                              │
-                         ▼                              ▼                              ▼
-               ┌─────────────────┐               ┌─────────────────┐
-               │ Forecasting     │               │ Analysis Agent  │
-               │ Agent           │  PARALLEL     │ - Competitor    │
-               └────────┬────────┘               │ - External Data │
-                        │                        │ - Pricing Rules │
-                        │                        └────────┬────────┘
-                        └─────────┬──────────────────────┘
-                                  │
-                                  ▼
-                       ┌─────────────────────┐
-                       │ Recommendation Agent│
-                       └──────────┬──────────┘
-                                  │
-                                  ▼
-                       ┌─────────────────────┐
-                       │ What-If Analysis    │
-                       └─────────────────────┘
-  ```
+**Location:** `app/pipeline_orchestrator.py`, `app/routers/pipeline.py`
 
-- **Features:**
-  - **Change Tracker:** Thread-safe tracking of MongoDB collection changes
-  - **Automatic Model Retraining:** Prophet ML model is retrained before forecasting if:
-    - `historical_rides` collection has changed
-    - `competitor_prices` collection has changed
-    - New data exists since last training
-  - **Hourly Scheduler:** Runs pipeline only if changes detected (configurable in background_tasks.py)
-  - **Parallel Execution:** Forecasting + Analysis run concurrently
-  - **Sequential Phases:** Recommendations → What-If Impact analysis
-  - **Natural Language Explanations:** All phases generate GPT-4 explanations
-  - **Chatbot Compatibility:** All chatbot queries continue to work independently
+**Purpose:** Automated agent pipeline triggered by MongoDB changes
 
-- **API Endpoints:**
-  - `POST /api/v1/pipeline/trigger` - Manual pipeline trigger (force=true to run without changes)
-  - `GET /api/v1/pipeline/status` - Current pipeline status and change tracker
-  - `GET /api/v1/pipeline/history` - Pipeline run history
-  - `GET /api/v1/pipeline/changes` - Pending changes waiting for next run
-  - `POST /api/v1/pipeline/clear-changes` - Clear pending changes without running
+**Architecture:**
+```
+MongoDB Collections → Change Tracker → Hourly Scheduler
+                                             ↓
+                                    Pipeline Orchestrator
+                                             ↓
+                              ┌──────────────┴──────────────┐
+                              │ Check if ML Retrain Needed  │
+                              │ (historical_rides or         │
+                              │  competitor_prices changed?) │
+                              └──────────────┬──────────────┘
+                                             │
+                              ┌──────────────┴──────────────┐
+                              ↓                             ↓
+                    ┌─────────────────┐         ┌──────────────────┐
+                    │ ML Retrain      │         │ Skip Retraining  │
+                    │ (Prophet Model) │         │ (model up-to-date)│
+                    └────────┬────────┘         └────────┬─────────┘
+                             └──────────┬────────────────┘
+                                        │
+                                        ▼
+                    ┌───────────────────────────────────┐
+                    │     PHASE 1: PARALLEL EXECUTION   │
+                    └───────────────────────────────────┘
+                                        │
+                         ┏━━━━━━━━━━━━━━┻━━━━━━━━━━━━━━┓
+                         ↓                              ↓
+              ┌─────────────────────┐       ┌─────────────────────┐
+              │ Forecasting Agent   │       │ Analysis Agent      │
+              │ - Prophet ML (30d)  │       │ - Competitor Data   │
+              │ - Events Context    │       │ - External Events   │
+              │ - GPT-4o Explain    │       │ - Traffic Patterns  │
+              └──────────┬──────────┘       │ - Pricing Rules     │
+                         │                  │ - GPT-4o Insights   │
+                         │                  └──────────┬──────────┘
+                         └──────────┬─────────────────┘
+                                    ↓
+                    ┌───────────────────────────────────┐
+                    │    PHASE 2: SEQUENTIAL EXECUTION  │
+                    └───────────────────────────────────┘
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │ Recommendation Agent│
+                         │ - Strategy Context  │
+                         │ - Forecast Data     │
+                         │ - Analysis Insights │
+                         │ - GPT-4o Recommend  │
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │ What-If Analysis    │
+                         │ - Impact Simulation │
+                         │ - Revenue Projection│
+                         │ - GPT-4o Summary    │
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │ Store Results →     │
+                         │ MongoDB (pipeline_  │
+                         │         results)    │
+                         └─────────────────────┘
+```
 
-- **Pipeline-Specific Analysis Tools:**
-  - `analyze_competitor_data_for_pipeline()` - HWCO vs competitor comparison (with explanation)
-  - `analyze_external_data_for_pipeline()` - News, events, traffic synthesis (with explanation)
-  - `generate_pricing_rules_for_pipeline()` - Auto-generate pricing rules (with explanation)
-  - `calculate_whatif_impact_for_pipeline()` - KPI impact simulation (with explanation)
+**Features:**
+- **Change Tracker:** Thread-safe tracking of MongoDB collection changes
+- **Automatic ML Retraining:** Prophet ML model retrained before forecasting if:
+  - `historical_rides` collection has changed
+  - `competitor_prices` collection has changed
+  - New data exists since last training (checks timestamps)
+- **Hourly Scheduler:** Runs pipeline only if changes detected (configurable in `background_tasks.py`)
+- **Parallel Execution:** Forecasting + Analysis agents run concurrently for speed
+- **Sequential Phases:** Recommendation → What-If run after parallel phase completes
+- **Natural Language Explanations:** All agents generate GPT-4o-mini explanations
+- **Chatbot Compatibility:** All chatbot queries continue to work independently
+- **Result Storage:** Pipeline results stored in MongoDB `pipeline_results` collection
 
-- **Forecasting Phase Details:**
-  1. Check if `historical_rides` or `competitor_prices` data changed
-  2. If changed → Retrain Prophet ML model with latest data
-  3. Generate 30/60/90-day forecasts for CONTRACTED, STANDARD, CUSTOM pricing
-  4. Generate GPT-4 explanations for each forecast
-  5. Return forecasts with retraining status and explanations
+**API Endpoints:**
+- `POST /api/v1/pipeline/trigger` - Manual pipeline trigger
+  - Optional: `force=true` to run without checking for changes
+- `GET /api/v1/pipeline/status` - Current pipeline status and change tracker
+- `GET /api/v1/pipeline/history` - Pipeline run history from MongoDB
+- `GET /api/v1/pipeline/changes` - Pending changes waiting for next run
+- `POST /api/v1/pipeline/clear-changes` - Clear pending changes without running
+- `GET /api/v1/pipeline/last-run` - Most recent pipeline execution results
+
+**Pipeline-Specific Analysis Tools:**
+- `analyze_competitor_data_for_pipeline()` - HWCO vs competitor comparison with GPT-4o explanation
+- `analyze_external_data_for_pipeline()` - News, events, traffic synthesis with GPT-4o explanation
+- `generate_pricing_rules_for_pipeline()` - Auto-generate pricing rules with GPT-4o explanation
+- `calculate_whatif_impact_for_pipeline()` - KPI impact simulation with GPT-4o explanation
+
+**Forecasting Phase Details:**
+1. Check if `historical_rides` or `competitor_prices` collections changed
+2. If changed → Retrain Prophet ML model with latest combined data (HWCO + competitor)
+3. Generate 30/60/90-day forecasts for CONTRACTED, STANDARD, CUSTOM pricing
+4. Generate GPT-4o-mini explanations for each forecast
+5. Return forecasts with retraining status, explanations, and metadata
+
+**Analysis Phase Details:**
+1. Query competitor data from MongoDB (`competitor_prices` collection)
+2. Query n8n data from MongoDB (events, traffic, news)
+3. Analyze HWCO vs competitor pricing gaps
+4. Generate pricing rules based on competitive positioning
+5. Generate GPT-4o-mini insights combining all data sources
+
+**Recommendation Phase Details:**
+1. Receive forecast and analysis outputs from Phase 1
+2. Query strategy knowledge from ChromaDB for business rules
+3. Combine forecast + analysis + strategy context
+4. Generate strategic recommendations using GPT-4o-mini
+5. Focus on revenue objectives (15-25% increase)
+
+**What-If Phase Details:**
+1. Simulate impact of recommendations on KPIs
+2. Calculate projected revenue, profit margin improvements
+3. Assess if business objectives would be met
+4. Generate GPT-4o-mini summary with risk/benefit analysis
+
+---
 
 ### 5. ChromaDB Collections (5)
 Created automatically by Data Ingestion Agent with OpenAI embeddings:
