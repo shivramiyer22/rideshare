@@ -411,8 +411,9 @@ try:
             # ChromaDB RAG tools (for similar scenarios)
             query_similar_pricing_scenarios,
             query_pricing_strategies,
-            # Calculation tool
-            calculate_price_with_explanation
+            # Calculation tools
+            calculate_price_with_explanation,
+            estimate_ride_price  # NEW: Price estimation tool
         ],
         system_prompt=(
             "You are a pricing specialist. "
@@ -425,18 +426,27 @@ try:
             "- For similar past scenarios (RAG search): use query_similar_pricing_scenarios "
             "- For pricing strategies/rules: use query_pricing_strategies "
             "- For price calculations: use calculate_price_with_explanation "
+            "- For price ESTIMATES (segment-based): use estimate_ride_price "
+            "\n\n"
+            "NEW: Price Estimation Capability: "
+            "- Use estimate_ride_price when user asks 'what would this cost?' or 'price preview' "
+            "- Requires: location_category, loyalty_tier, vehicle_type, pricing_model "
+            "- Optional: distance and duration for exact calculation "
+            "- Returns comprehensive estimate with historical baseline and forecast "
             "\n\n"
             "Key responsibilities: "
             "- Calculate prices using PricingEngine for accurate results "
+            "- Provide price estimates for segments without creating orders "
             "- Explain price breakdowns in natural language using OpenAI GPT-4 "
             "- Reference actual historical and competitor data to justify pricing decisions "
             "- Use business rules and strategies to guide recommendations "
             "\n\n"
             "When answering pricing questions: "
-            "1. Use get_historical_pricing_data for questions about past prices (monthly averages, etc.) "
-            "2. Use get_competitor_pricing_data to compare with competitor pricing "
-            "3. Use calculate_price_with_explanation for new price calculations "
-            "4. Always provide specific numbers from actual data "
+            "1. Use estimate_ride_price for 'what would this cost?' queries (price preview) "
+            "2. Use get_historical_pricing_data for questions about past prices (monthly averages, etc.) "
+            "3. Use get_competitor_pricing_data to compare with competitor pricing "
+            "4. Use calculate_price_with_explanation for exact price calculations with trip details "
+            "5. Always provide specific numbers from actual data "
             "\n\n"
             "Always provide clear, data-driven explanations with real numbers from the database."
         ),

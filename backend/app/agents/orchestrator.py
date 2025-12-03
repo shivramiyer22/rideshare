@@ -66,20 +66,26 @@ def route_to_analysis_agent(query: str, context: Dict[str, Any] = None) -> str:
 @tool
 def route_to_pricing_agent(query: str, context: Dict[str, Any] = None) -> str:
     """
-    Route query to Pricing Agent for price calculations and explanations.
+    Route query to Pricing Agent for price calculations, estimations, and explanations.
     
     Use this for queries about:
-    - Price calculations
-    - Pricing explanations
-    - Price breakdowns
-    - Pricing strategies
+    - Price calculations and exact pricing
+    - Price ESTIMATIONS ("what would this cost?", "price preview")
+    - Pricing explanations and breakdowns
+    - Pricing strategies and competitor comparisons
+    - Historical pricing data
+    
+    NEW: Price Estimation Support
+    - User asks "what would a ride cost?" → Uses estimate_ride_price tool
+    - Provides segment-based estimates without creating orders
+    - Combines historical baseline + forecast predictions
     
     Args:
-        query: User query about pricing
+        query: User query about pricing or price estimation
         context: Optional conversation context
     
     Returns:
-        str: Pricing Agent response
+        str: Pricing Agent response with calculations or estimates
     """
     try:
         from app.agents.pricing import pricing_agent
@@ -208,9 +214,11 @@ try:
         "\n"
         "Pricing Agent - for: "
         "  - Price calculations for NEW rides "
+        "  - Price ESTIMATIONS ('what would this cost?', 'price preview') "
         "  - Pricing explanations and breakdowns "
         "  - Competitor pricing analysis "
         "  - Historical pricing patterns "
+        "  - Segment-based price estimates (Urban/Suburban/Rural, Gold/Silver/Regular, Premium/Economy) "
         "\n"
         "Forecasting Agent - for: "
         "  - Demand forecasts, predictions "
@@ -223,10 +231,17 @@ try:
         "  - Competitive positioning "
         "  - HWCO vs competitor comparisons "
         "\n\n"
+        "NEW: Price Estimation Queries "
+        "- When user asks 'what would a ride cost?' or 'price preview' → Route to Pricing Agent "
+        "- Examples: 'How much for Premium in Urban?', 'What's the price for Gold members?' "
+        "- Pricing Agent will use segment analysis to provide comprehensive estimates "
+        "- No order is created - this is just estimation/preview "
+        "\n\n"
         "IMPORTANT: "
         "- For 'competitor' questions → Try BOTH Analysis Agent AND Pricing Agent "
         "- For 'HWCO vs competitor' → Route to Recommendation Agent (has get_competitor_comparison tool) "
         "- For historical/past data → Analysis Agent "
+        "- For price estimates/preview → Pricing Agent "
         "- ALWAYS call at least one agent - never give a generic response without data "
         "\n\n"
         "Multi-Agent Coordination: "
