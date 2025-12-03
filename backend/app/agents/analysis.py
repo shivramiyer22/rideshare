@@ -528,6 +528,183 @@ def get_top_revenue_rides(month: str = "", year: str = "", limit: int = 10) -> s
 
 
 @tool
+def get_monthly_price_statistics(month: str = "", year: str = "") -> str:
+    """
+    Get average unit price and other price statistics for a specific month.
+    
+    Calculates average price per ride, total revenue, ride count, and price distribution
+    for the specified month from historical_rides data.
+    
+    Args:
+        month: Month name (e.g., "November", "January") or number (1-12). Required.
+        year: Year (e.g., "2024"). Optional - if not provided, aggregates across all years.
+    
+    Returns:
+        str: JSON string with monthly price statistics including average_unit_price
+    """
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        collection = db["historical_rides"]
+        
+        # Map month names to numbers
+        month_map = {
+            "january": 1, "february": 2, "march": 3, "april": 4,
+            "may": 5, "june": 6, "july": 7, "august": 8,
+            "september": 9, "october": 10, "november": 11, "december": 12
+        }
+        
+        # Parse month
+        month_num = None
+        if month:
+            if month.lower() in month_map:
+                month_num = month_map[month.lower()]
+            elif month.isdigit():
+                month_num = int(month)
+        
+        if not month_num:
+            return json.dumps({
+                "error": "Month is required. Provide month name (e.g., 'November') or number (1-12)."
+            })
+        
+        # Parse year
+        year_num = None
+        if year and year.isdigit():
+            year_num = int(year)
+        
+        try:
+            # Build aggregation pipeline for monthly statistics
+            match_stage = {"$addFields": {"order_month": {"$month": "$Order_Date"}}}
+            
+            pipeline = [
+                match_stage,
+                {"$match": {"order_month": month_num}}
+            ]
+            
+            # Add year filter if specified
+            if year_num:
+                pipeline[0] = {"$addFields": {
+                    "order_month": {"$month": "$Order_Date"},
+                    "order_year": {"$year": "$Order_Date"}
+                }}
+                pipeline[1] = {"$match": {"order_month": month_num, "order_year": year_num}}
+            
+            # Add aggregation for statistics
+            pipeline.extend([
+                {
+                    "$group": {
+                        "_id": None,
+                        "total_revenue": {"$sum": "$Historical_Cost_of_Ride"},
+                        "total_rides": {"$sum": 1},
+                        "average_unit_price": {"$avg": "$Historical_Cost_of_Ride"},
+                        "min_price": {"$min": "$Historical_Cost_of_Ride"},
+                        "max_price": {"$max": "$Historical_Cost_of_Ride"},
+                        "total_duration": {"$sum": "$Expected_Ride_Duration"}
+                    }
+                }
+            ])
+            
+            result = list(collection.aggregate(pipeline))
+            
+            # Get price by pricing model
+            pricing_model_pipeline = [
+                {"$addFields": {"order_month": {"$month": "$Order_Date"}}},
+                {"$match": {"order_month": month_num}},
+                {
+                    "$group": {
+                        "_id": "$Pricing_Model",
+                        "count": {"$sum": 1},
+                        "avg_price": {"$avg": "$Historical_Cost_of_Ride"},
+                        "total_revenue": {"$sum": "$Historical_Cost_of_Ride"}
+                    }
+                }
+            ]
+            
+            if year_num:
+                pricing_model_pipeline[0] = {"$addFields": {
+                    "order_month": {"$month": "$Order_Date"},
+                    "order_year": {"$year": "$Order_Date"}
+                }}
+                pricing_model_pipeline[1] = {"$match": {"order_month": month_num, "order_year": year_num}}
+            
+            pricing_breakdown = list(collection.aggregate(pricing_model_pipeline))
+            
+            # Get price by location
+            location_pipeline = [
+                {"$addFields": {"order_month": {"$month": "$Order_Date"}}},
+                {"$match": {"order_month": month_num}},
+                {
+                    "$group": {
+                        "_id": "$Location_Category",
+                        "count": {"$sum": 1},
+                        "avg_price": {"$avg": "$Historical_Cost_of_Ride"}
+                    }
+                }
+            ]
+            
+            if year_num:
+                location_pipeline[0] = {"$addFields": {
+                    "order_month": {"$month": "$Order_Date"},
+                    "order_year": {"$year": "$Order_Date"}
+                }}
+                location_pipeline[1] = {"$match": {"order_month": month_num, "order_year": year_num}}
+            
+            location_breakdown = list(collection.aggregate(location_pipeline))
+            
+        finally:
+            client.close()
+        
+        if not result:
+            month_name = list(month_map.keys())[month_num - 1].title()
+            return json.dumps({
+                "error": f"No data found for {month_name}" + (f" {year_num}" if year_num else ""),
+                "month": month_name,
+                "year": year if year else "all"
+            })
+        
+        stats = result[0]
+        month_name = list(month_map.keys())[month_num - 1].title()
+        
+        # Format pricing model breakdown
+        pricing_by_model = {}
+        for pm in pricing_breakdown:
+            pricing_by_model[pm["_id"]] = {
+                "count": pm["count"],
+                "average_price": round(pm["avg_price"], 2),
+                "total_revenue": round(pm["total_revenue"], 2)
+            }
+        
+        # Format location breakdown
+        pricing_by_location = {}
+        for loc in location_breakdown:
+            pricing_by_location[loc["_id"]] = {
+                "count": loc["count"],
+                "average_price": round(loc["avg_price"], 2)
+            }
+        
+        # Calculate average duration per ride
+        avg_duration = stats["total_duration"] / stats["total_rides"] if stats["total_rides"] > 0 else 0
+        
+        return json.dumps({
+            "month": month_name,
+            "year": year if year else "all years",
+            "statistics": {
+                "average_unit_price": round(stats["average_unit_price"], 2),
+                "total_revenue": round(stats["total_revenue"], 2),
+                "total_rides": stats["total_rides"],
+                "min_price": round(stats["min_price"], 2),
+                "max_price": round(stats["max_price"], 2),
+                "average_ride_duration_minutes": round(avg_duration, 1)
+            },
+            "by_pricing_model": pricing_by_model,
+            "by_location": pricing_by_location,
+            "summary": f"{month_name} average unit price is ${stats['average_unit_price']:.2f} across {stats['total_rides']} rides with total revenue of ${stats['total_revenue']:,.2f}"
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error getting monthly price statistics: {str(e)}"})
+
+
+@tool
 def analyze_customer_segments() -> str:
     """
     Analyze customer distribution by loyalty tier.
@@ -1470,6 +1647,7 @@ try:
             calculate_profit_metrics,
             calculate_rides_count,
             get_top_revenue_rides,
+            get_monthly_price_statistics,
             analyze_customer_segments,
             analyze_location_performance,
             analyze_time_patterns,
@@ -1484,22 +1662,30 @@ try:
             "You are a data analysis specialist for a rideshare company. "
             "Your role is to analyze data, identify patterns, and generate actionable insights. "
             "\n\n"
+            "IMPORTANT TOOL SELECTION RULES: "
+            "- For questions about average price for a SPECIFIC MONTH (e.g., 'November average price', 'January unit price'): "
+            "  ALWAYS use get_monthly_price_statistics(month='November') to get actual data from historical_rides "
+            "- For general KPIs without month filter: use calculate_revenue_kpis "
+            "- For top rides by month: use get_top_revenue_rides(month='November') "
+            "- DO NOT use ChromaDB/RAG tools for questions about specific historical data - use the database tools instead "
+            "\n\n"
             "Key responsibilities: "
             "- Calculate KPIs: revenue, profit, rides count, customer segments "
             "- Analyze patterns: location performance, time patterns, demand trends "
-            "- Query historical data: top revenue rides, customer behavior "
+            "- Query historical data: monthly statistics, top revenue rides, customer behavior "
             "- Analyze n8n ingested data: events (demand impact), traffic (surge pricing), news (industry trends) "
-            "- Query ChromaDB for similar past scenarios using RAG "
+            "- Query ChromaDB for similar past scenarios using RAG (for strategy/context, NOT historical data) "
             "- Generate structured insights using OpenAI GPT-4 "
             "\n\n"
             "Workflow for analytics queries: "
-            "1. Use KPI tools (calculate_revenue_kpis, calculate_profit_metrics, etc.) for metrics "
-            "2. Use get_top_revenue_rides for top performing rides "
-            "3. Use analyze_customer_segments for customer distribution "
-            "4. Use analyze_location_performance and analyze_time_patterns for patterns "
-            "5. Generate structured insights combining all data "
+            "1. For MONTHLY data (e.g., 'November average price'): use get_monthly_price_statistics(month='...')  "
+            "2. For general KPIs: use calculate_revenue_kpis, calculate_profit_metrics, etc. "
+            "3. For top rides: use get_top_revenue_rides "
+            "4. For customer analysis: use analyze_customer_segments "
+            "5. For patterns: use analyze_location_performance and analyze_time_patterns "
+            "6. Generate insights combining all data "
             "\n\n"
-            "Always provide clear, data-driven answers. Include specific numbers and trends. "
+            "Always provide clear, data-driven answers with ACTUAL NUMBERS from the database. "
             "Help achieve business objectives: revenue increase 15-25%, customer retention, competitive positioning."
         ),
         name="analysis_agent"
