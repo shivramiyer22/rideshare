@@ -95,3 +95,30 @@ export const pricingAPI = {
   simulate: (data: any) => api.post('/api/pricing/simulate', data),
 };
 
+// ============================================================================
+// PRIORITY QUEUE API
+// ============================================================================
+
+/**
+ * Fetch priority queue data for P0, P1, P2 queues
+ * 
+ * Returns:
+ * - P0: Array of CONTRACTED orders (FIFO)
+ * - P1: Array of STANDARD orders (sorted by revenue_score DESC)
+ * - P2: Array of CUSTOM orders (sorted by revenue_score DESC)
+ * - status: Object with counts for each queue
+ */
+export async function fetchPriorityQueue() {
+  try {
+    const response = await api.get('/api/orders/queue/priority');
+    return response.data;
+  } catch (error) {
+    console.error('Error fetching priority queue:', error);
+    throw new Error(
+      error instanceof Error 
+        ? error.message 
+        : 'Failed to fetch priority queue data'
+    );
+  }
+}
+
