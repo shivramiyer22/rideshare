@@ -689,9 +689,9 @@ def generate_multidimensional_forecast(periods: int = 30) -> str:
                 "total_90d_forecast_revenue": round(total_90d_revenue, 2),
                 "revenue_growth_30d_pct": round((total_30d_revenue - total_baseline_revenue) / total_baseline_revenue * 100, 2) if total_baseline_revenue > 0 else 0
             },
-            "segmented_forecasts": segmented_forecasts[:50],  # Limit to top 50 for response size
-            "aggregated_forecasts": aggregated_forecasts[:20],  # Limit to top 20
-            "note": "Full forecast data stored in MongoDB pipeline_results collection"
+            "segmented_forecasts": segmented_forecasts,  # Return ALL segments (removed [:50] limit)
+            "aggregated_forecasts": aggregated_forecasts,  # Return ALL aggregated forecasts
+            "note": "All forecast data included - 162 segments expected"
         }
         
         return json.dumps(result)
