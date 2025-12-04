@@ -144,16 +144,17 @@ async def get_orders():
                 loyalty_tier=order.get("loyalty_tier", "Regular"),
                 vehicle_type=order.get("vehicle_type", "Economy"),
                 pricing_model=order.get("pricing_model", "STANDARD"),
-                # Computed fields
-                segment_avg_price=order.get("segment_avg_price"),
-                segment_avg_distance=order.get("segment_avg_distance"),
+                # Computed fields with NEW data model
+                segment_avg_fcs_unit_price=order.get("segment_avg_fcs_unit_price"),
+                segment_avg_fcs_ride_duration=order.get("segment_avg_fcs_ride_duration"),
+                segment_avg_riders_per_order=order.get("segment_avg_riders_per_order"),
+                segment_avg_drivers_per_order=order.get("segment_avg_drivers_per_order"),
+                segment_demand_profile=order.get("segment_demand_profile"),
                 estimated_price=order.get("estimated_price", 0.0),
                 price_breakdown=order.get("price_breakdown"),
                 pricing_explanation=order.get("pricing_explanation"),
-                # Legacy fields
-                pricing_tier=order.get("pricing_tier", order.get("pricing_model", "STANDARD")),
+                # Priority
                 priority=order.get("priority", "P2"),
-                price=order.get("price", order.get("estimated_price", 0.0)),
                 created_at=created_at,
                 updated_at=updated_at
             ))
@@ -212,16 +213,17 @@ async def get_order(order_id: str):
             loyalty_tier=order.get("loyalty_tier", "Regular"),
             vehicle_type=order.get("vehicle_type", "Economy"),
             pricing_model=order.get("pricing_model", "STANDARD"),
-            # Computed fields
-            segment_avg_price=order.get("segment_avg_price"),
-            segment_avg_distance=order.get("segment_avg_distance"),
+            # Computed fields with NEW data model
+            segment_avg_fcs_unit_price=order.get("segment_avg_fcs_unit_price"),
+            segment_avg_fcs_ride_duration=order.get("segment_avg_fcs_ride_duration"),
+            segment_avg_riders_per_order=order.get("segment_avg_riders_per_order"),
+            segment_avg_drivers_per_order=order.get("segment_avg_drivers_per_order"),
+            segment_demand_profile=order.get("segment_demand_profile"),
             estimated_price=order.get("estimated_price", 0.0),
             price_breakdown=order.get("price_breakdown"),
             pricing_explanation=order.get("pricing_explanation"),
-            # Legacy fields
-            pricing_tier=order.get("pricing_tier", order.get("pricing_model", "STANDARD")),
+            # Priority
             priority=order.get("priority", "P2"),
-            price=order.get("price", order.get("estimated_price", 0.0)),
             created_at=created_at,
             updated_at=updated_at
         )
@@ -313,9 +315,12 @@ async def create_order(order: OrderCreate):
             "vehicle_type": order.vehicle_type,
             "pricing_model": order.pricing_model,
             
-            # Computed pricing fields
-            "segment_avg_price": estimate["historical_baseline"]["avg_price"],
-            "segment_avg_distance": estimate["historical_baseline"]["avg_distance"],
+            # Computed pricing fields with NEW data model
+            "segment_avg_fcs_unit_price": estimate["historical_baseline"].get("segment_avg_fcs_unit_price", 0.0),
+            "segment_avg_fcs_ride_duration": estimate["historical_baseline"].get("segment_avg_fcs_ride_duration", 0.0),
+            "segment_avg_riders_per_order": estimate["historical_baseline"].get("segment_avg_riders_per_order", 0.0),
+            "segment_avg_drivers_per_order": estimate["historical_baseline"].get("segment_avg_drivers_per_order", 0.0),
+            "segment_demand_profile": estimate["historical_baseline"].get("segment_demand_profile", "MEDIUM"),
             "estimated_price": estimate["estimated_price"],
             "price_breakdown": estimate.get("price_breakdown"),
             "pricing_explanation": estimate["explanation"],
@@ -324,10 +329,8 @@ async def create_order(order: OrderCreate):
             "distance": order.distance,
             "duration": order.duration,
             
-            # Legacy/compatibility fields
-            "pricing_tier": order.pricing_model,  # For backward compatibility
+            # Priority
             "priority": priority,
-            "price": estimate["estimated_price"],  # For backward compatibility
             
             "created_at": now,
             "updated_at": now
@@ -366,16 +369,17 @@ async def create_order(order: OrderCreate):
             loyalty_tier=order.loyalty_tier,
             vehicle_type=order.vehicle_type,
             pricing_model=order.pricing_model,
-            # Computed fields
-            segment_avg_price=estimate["historical_baseline"]["avg_price"],
-            segment_avg_distance=estimate["historical_baseline"]["avg_distance"],
+            # Computed fields with NEW data model
+            segment_avg_fcs_unit_price=estimate["historical_baseline"].get("segment_avg_fcs_unit_price", 0.0),
+            segment_avg_fcs_ride_duration=estimate["historical_baseline"].get("segment_avg_fcs_ride_duration", 0.0),
+            segment_avg_riders_per_order=estimate["historical_baseline"].get("segment_avg_riders_per_order", 0.0),
+            segment_avg_drivers_per_order=estimate["historical_baseline"].get("segment_avg_drivers_per_order", 0.0),
+            segment_demand_profile=estimate["historical_baseline"].get("segment_demand_profile", "MEDIUM"),
             estimated_price=estimate["estimated_price"],
             price_breakdown=estimate.get("price_breakdown"),
             pricing_explanation=estimate["explanation"],
-            # Legacy fields
-            pricing_tier=order.pricing_model,
+            # Priority
             priority=priority,
-            price=estimate["estimated_price"],
             created_at=now,
             updated_at=now
         )
