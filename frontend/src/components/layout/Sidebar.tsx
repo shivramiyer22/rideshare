@@ -7,7 +7,6 @@ import {
   TrendingUp,
   Radio,
   Activity,
-  Users,
   Settings,
   X,
   Upload,
@@ -20,7 +19,6 @@ export type TabType =
   | 'forecasting'
   | 'market'
   | 'elasticity'
-  | 'competitor'
   | 'upload';
 
 interface SidebarProps {
@@ -32,11 +30,10 @@ interface SidebarProps {
 
 const menuItems = [
   { id: 'overview' as TabType, label: 'Overview', icon: LayoutDashboard },
-  { id: 'pricing' as TabType, label: 'Pricing Engine', icon: DollarSign },
+  { id: 'pricing' as TabType, label: 'Order Pricing', icon: DollarSign },
   { id: 'forecasting' as TabType, label: 'Forecasting', icon: TrendingUp },
   { id: 'market' as TabType, label: 'Market Signals', icon: Radio },
   { id: 'elasticity' as TabType, label: 'Analysis', icon: Activity },
-  { id: 'competitor' as TabType, label: 'Competitors', icon: Users },
   { id: 'upload' as TabType, label: 'Data Upload', icon: Upload },
 ];
 

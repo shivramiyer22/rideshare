@@ -2,66 +2,14 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  Database,
   MessageSquare,
-  BarChart3,
-  DollarSign,
-  TrendingUp,
-  Lightbulb,
   Send,
   X,
 } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { useChatbot } from '@/hooks/useChatbot';
 import { cn } from '@/lib/utils';
-
-const agents = [
-  {
-    id: 'data-ingestion',
-    name: 'Data Ingestion',
-    icon: Database,
-    color: 'text-blue-500',
-    status: 'active' as const,
-  },
-  {
-    id: 'orchestrator',
-    name: 'Orchestrator',
-    icon: MessageSquare,
-    color: 'text-purple-500',
-    status: 'active' as const,
-  },
-  {
-    id: 'analysis',
-    name: 'Analysis',
-    icon: BarChart3,
-    color: 'text-green-500',
-    status: 'active' as const,
-  },
-  {
-    id: 'pricing',
-    name: 'Pricing',
-    icon: DollarSign,
-    color: 'text-yellow-500',
-    status: 'active' as const,
-  },
-  {
-    id: 'forecasting',
-    name: 'Forecasting',
-    icon: TrendingUp,
-    color: 'text-orange-500',
-    status: 'active' as const,
-  },
-  {
-    id: 'recommendation',
-    name: 'Recommendation',
-    icon: Lightbulb,
-    color: 'text-red-500',
-    status: 'active' as const,
-  },
-];
 
 export function AIPanel() {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -127,37 +75,6 @@ export function AIPanel() {
                 Clear Chat
               </button>
             )}
-          </div>
-        </div>
-
-        {/* AI Agents Grid */}
-        <div className="p-4 border-b border-border">
-          <h3 className="text-sm font-medium mb-3">Active Agents</h3>
-          <div className="grid grid-cols-2 gap-2">
-            {agents.map((agent) => {
-              const Icon = agent.icon;
-              return (
-                <div
-                  key={agent.id}
-                  className="p-3 rounded-lg hover:opacity-90 transition-all cursor-pointer"
-                  style={{
-                    background: 'linear-gradient(135deg, #3E4C59 0%, #6B8AA8 100%)',
-                    boxShadow: '4px 4px 8px rgba(0, 0, 0, 0.15), -2px -2px 6px rgba(255, 255, 255, 0.1)',
-                  }}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <Icon size={16} className="text-white" />
-                    <Badge
-                      variant={agent.status === 'active' ? 'success' : 'secondary'}
-                      className="text-[10px] px-1 py-0"
-                    >
-                      {agent.status}
-                    </Badge>
-                  </div>
-                  <p className="text-xs font-medium text-white">{agent.name}</p>
-                </div>
-              );
-            })}
           </div>
         </div>
 

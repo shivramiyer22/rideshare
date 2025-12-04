@@ -1,10 +1,10 @@
 'use client';
 
 import React, { useState, useRef } from 'react';
-import { Upload, Database, TrendingUp, Calendar, FileText, Users } from 'lucide-react';
+import { Upload, Database } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 
-type UploadType = 'historical' | 'competitor' | 'event' | 'traffic' | 'loyalty';
+type UploadType = 'historical';
 
 export function UploadTab() {
   const [activeTab, setActiveTab] = useState<UploadType>('historical');
@@ -14,10 +14,6 @@ export function UploadTab() {
 
   const uploadTabs = [
     { id: 'historical' as UploadType, label: 'Historical Data', icon: Database },
-    { id: 'competitor' as UploadType, label: 'Competitor Data', icon: TrendingUp },
-    { id: 'event' as UploadType, label: 'Event Data', icon: Calendar },
-    { id: 'traffic' as UploadType, label: 'Traffic Signals', icon: FileText },
-    { id: 'loyalty' as UploadType, label: 'Loyalty Data', icon: Users },
   ];
 
   const uploadConfig = {
@@ -35,66 +31,6 @@ export function UploadTab() {
         'Data is validated and stored in MongoDB',
         'Derived fields (Historical_Unit_Price, Supply_by_Demand, Demand_Profile) are calculated automatically',
         'Use this ML training endpoint to start Prophet ML models on this data',
-      ],
-    },
-    competitor: {
-      title: 'Competitor Data Requirements',
-      requirements: [
-        'Required columns: Competitor_Name, Pricing_Strategy, Base_Price',
-        'Optional columns: Surge_Multiplier, Discount_Offers, Market_Share',
-        'Accepted formats: CSV, XLSX, XLS',
-        'Data should be current (within last 30 days)',
-      ],
-      formats: 'CSV, XLSX, or XLS files',
-      afterUpload: [
-        'Data is validated and stored securely',
-        'Competitor analysis is updated automatically',
-        'Price comparison charts are refreshed',
-      ],
-    },
-    event: {
-      title: 'Event Data Requirements',
-      requirements: [
-        'Required columns: Event_Name, Event_Date, Event_Location, Expected_Attendance',
-        'Optional columns: Event_Type, Start_Time, End_Time',
-        'Accepted formats: CSV, JSON',
-        'Events should be future-dated for forecasting',
-      ],
-      formats: 'CSV or JSON files only',
-      afterUpload: [
-        'Events are integrated into demand forecasting',
-        'Surge pricing recommendations are generated',
-        'Calendar view is updated with events',
-      ],
-    },
-    traffic: {
-      title: 'Traffic Signal Requirements',
-      requirements: [
-        'Required columns: Timestamp, Location, Traffic_Level, Congestion_Score',
-        'Optional columns: Weather_Condition, Road_Closures, Incidents',
-        'Accepted formats: CSV, JSON',
-        'Real-time or historical traffic data accepted',
-      ],
-      formats: 'CSV or JSON files only',
-      afterUpload: [
-        'Traffic patterns are analyzed',
-        'Location-based multipliers are updated',
-        'Surge zones are recalculated',
-      ],
-    },
-    loyalty: {
-      title: 'Loyalty Data Requirements',
-      requirements: [
-        'Required columns: Customer_Id, Loyalty_Status, Total_Rides, Total_Spend',
-        'Optional columns: Join_Date, Last_Ride_Date, Average_Rating, Preferred_Vehicle',
-        'Accepted formats: CSV, JSON',
-        'Customer segmentation (Gold, Silver, Regular)',
-      ],
-      formats: 'CSV or JSON files only',
-      afterUpload: [
-        'Customer profiles are updated',
-        'Loyalty discounts are recalculated',
-        'Segmentation analysis is refreshed',
       ],
     },
   };
@@ -194,7 +130,7 @@ export function UploadTab() {
         <input
           ref={fileInputRef}
           type="file"
-          accept={activeTab === 'competitor' ? '.csv,.xlsx,.xls' : '.csv,.json'}
+          accept=".csv,.json"
           onChange={handleFileSelect}
           className="hidden"
         />
