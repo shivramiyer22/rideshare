@@ -22,15 +22,23 @@ backend/
 │   │   ├── analysis.py          # Analysis Agent (business intelligence)
 │   │   ├── pricing.py           # Pricing Agent (dynamic pricing)
 │   │   ├── forecasting.py       # Forecasting Agent (Prophet ML + n8n data)
-│   │   └── recommendation.py    # Recommendation Agent (strategic advice with RAG)
-│   ├── routers/           # Contains router modules
+│   │   ├── recommendation.py    # Recommendation Agent (strategic advice with RAG)
+│   │   ├── pricing_helpers.py   # Pricing Engine integration helpers
+│   │   └── forecasting_helpers.py # Prophet ML forecasting helpers
+│   ├── utils/             # Utility modules
+│       ├── authentication.py # Functions for authentication
+│       ├── validation.py      # Functions for validation
+│       └── report_generator.py # Segment dynamic pricing report generation
 │   │   ├── items.py       # Routes and endpoints related to items
 │   │   ├── users.py       # Routes and endpoints related to users
 │   │   ├── orders.py      # Order creation, management, and priority queue endpoints
 │   │   ├── ml.py          # Prophet ML training and forecasting endpoints (enhanced with pricing_model breakdown)
 │   │   ├── upload.py      # File upload endpoints (historical data, competitor data)
 │   │   ├── analytics.py   # Analytics dashboard endpoints
-│   │   └── chatbot.py     # WebSocket chatbot endpoint
+│   │   ├── chatbot.py     # WebSocket chatbot endpoint
+│   │   ├── pipeline.py    # Pipeline orchestration endpoints (manual trigger, status)
+│   │   ├── agent_tests.py # Agent testing endpoints (Swagger UI)
+│   │   └── reports.py     # Segment dynamic pricing analysis reports (JSON/CSV)
 │   ├── agents/            # 6 AI Agents + Shared Utilities
 │   │   ├── utils.py       # Shared utilities (ChromaDB & MongoDB querying functions)
 │   │   │                   # - setup_chromadb_client()
@@ -607,6 +615,90 @@ Created automatically by Data Ingestion Agent with OpenAI embeddings:
 - **Verification:** Run `python3 tests/test_chromadb_collections.py` to verify all collections exist and are accessible
 - **Manual Sync:** Use `POST /api/v1/upload/sync-strategies-to-chromadb` to manually sync pricing strategies from MongoDB to ChromaDB
 
+---
+
+### 6. Segment Dynamic Pricing Report
+
+**NEW:** Comprehensive per-segment analytics for all 162 segments with multiple pricing scenarios.
+
+**Location:** 
+- Report Generator: `app/utils/report_generator.py`
+- API Router: `app/routers/reports.py`
+- Schemas: `app/models/schemas.py` (SegmentDynamicPricingReport, etc.)
+
+**Functionality:**
+- Generates detailed pricing analytics for all 162 segments (5 dimensions: location, loyalty, vehicle, demand, pricing_model)
+- Each segment includes 5 pricing scenarios:
+  1. **HWCO Continue Current**: Historical baseline from MongoDB
+  2. **Lyft Continue Current**: Competitor baseline from MongoDB
+  3. **Recommendation 1**: Forecast with pricing rules applied
+  4. **Recommendation 2**: Forecast with alternative rules
+  5. **Recommendation 3**: Forecast with third strategy
+- Per-segment impacts stored in MongoDB (`pricing_strategies` collection) during pipeline execution
+- Supports both JSON and CSV output formats
+
+**API Endpoints:**
+
+1. **Get Full Report (JSON)**:
+   ```bash
+   GET /api/v1/reports/segment-dynamic-pricing-analysis?format=json
+   ```
+   Returns complete 162-segment report with all scenarios
+
+2. **Get Full Report (CSV)**:
+   ```bash
+   GET /api/v1/reports/segment-dynamic-pricing-analysis?format=csv
+   ```
+   Downloads CSV file with 25 columns (5 dimensions + 4 fields × 5 scenarios)
+
+3. **Get Summary**:
+   ```bash
+   GET /api/v1/reports/segment-dynamic-pricing-analysis/summary
+   ```
+   Returns aggregate statistics and revenue uplift percentages
+
+**Chatbot Integration:**
+- Natural language queries: "Show me segment pricing report for Urban Gold Premium"
+- Tool: `query_segment_dynamic_pricing_report` in Analysis Agent
+- Supports filtering by any segment dimension
+- Returns JSON with filtered results
+
+**Data Structure (per segment):**
+```json
+{
+  "segment": {
+    "location_category": "Urban",
+    "loyalty_tier": "Gold",
+    "vehicle_type": "Premium",
+    "demand_profile": "HIGH",
+    "pricing_model": "STANDARD"
+  },
+  "hwco_continue_current": {
+    "rides_30d": 100,
+    "unit_price": 50.0,
+    "revenue_30d": 5000.0,
+    "explanation": "HWCO historical average..."
+  },
+  "lyft_continue_current": { /* ... */ },
+  "recommendation_1": { /* ... */ },
+  "recommendation_2": { /* ... */ },
+  "recommendation_3": { /* ... */ }
+}
+```
+
+**Storage:**
+- Pipeline stores `per_segment_impacts` in both:
+  1. `pipeline_results` collection (complete pipeline record)
+  2. `pricing_strategies` collection (easy retrieval for reports)
+
+**Testing:**
+- Test File: `tests/test_segment_dynamic_pricing_report.py`
+- Coverage: 7 tests (report generation, CSV conversion, API endpoints, chatbot tools)
+- Status: ✅ 100% pass rate
+- Documentation: `tests/README_TESTING_SEGMENT_DYNAMIC_PRICING_REPORT.md`
+
+---
+
 ## Getting Started
 
 ### Prerequisites
@@ -955,27 +1047,40 @@ All test scripts are in `tests/` folder. Run tests to verify functionality:
 - **WebSocket Endpoint: 5/5 tests passing ✓**
 - **OpenAI Connection: 4/4 tests passing ✓**
 - **ChromaDB Collections: 5/5 tests passing ✓**
-- **Analysis Agent API: 10/10 tests passing ✓** (NEW - sync PyMongo)
+- **Analysis Agent API: 10/10 tests passing ✓** (sync PyMongo)
+- **Segment Dynamic Pricing Report: 7/7 tests passing ✓** (NEW)
 
 **Existing Tests:**
 - Data Ingestion Agent: 4/4 tests passing ✓
 - Prophet ML: 5/5 tests passing ✓
 - Pricing Engine: 6/6 tests passing ✓
 - File Upload: 8/8 tests passing ✓
+- Order Price Estimation: 18/18 tests passing ✓
 
 **Analysis Agent (Sync PyMongo):**
-- ✓ **Analysis Agent API: 10/10 tests passing ✓** (new)
+- ✓ **Analysis Agent API: 10/10 tests passing ✓** 
 
-**Agent Pipeline & ML Combined Training (NEW):**
-- ✓ **Agent Pipeline: 16/16 tests passing ✓** (new)
-- ✓ **ML Combined Training: 14/14 tests passing ✓** (new)
+**Agent Pipeline & ML Combined Training:**
+- ✓ **Agent Pipeline: 16/16 tests passing ✓**
+- ✓ **ML Combined Training: 14/14 tests passing ✓**
+
+**Segment Dynamic Pricing Report (NEW):**
+- ✓ **Report Generation: 7/7 tests passing ✓**
+- Test File: `tests/test_segment_dynamic_pricing_report.py`
+- Documentation: `tests/README_TESTING_SEGMENT_DYNAMIC_PRICING_REPORT.md`
+- Results: `tests/TEST_RESULTS_SEGMENT_DYNAMIC_PRICING.md`
+
+**Run Segment Report Tests:**
+```bash
+python3 -m pytest tests/test_segment_dynamic_pricing_report.py -v
+```
 
 **Run Pipeline + ML Tests:**
 ```bash
 python3 -m pytest tests/test_pipeline.py tests/test_ml_combined_training.py -v
 ```
 
-**Total: 132+ tests, 100% pass rate**
+**Total: 146+ tests, 100% pass rate**
 
 ## Troubleshooting
 

@@ -781,14 +781,27 @@ class AgentPipeline:
             else:
                 forecasts_json = json.dumps(forecasts_data) if forecasts_data else "{}"
             
+            # FIXED: rules_data already contains "pricing_rules" key from Analysis phase
+            # We need to extract it properly, not double-extract
             pricing_rules = rules_data.get("pricing_rules", {})
-            if isinstance(pricing_rules, dict):
+            if pricing_rules:
+                # pricing_rules is the actual rules object
                 rules_json = json.dumps(pricing_rules)
             else:
+                # Fallback: use entire rules_data if pricing_rules key doesn't exist
                 rules_json = json.dumps(rules_data) if rules_data else "{}"
             
-            if not forecasts_data or not rules_data:
-                logger.warning("    Missing forecasts or rules data, using empty data")
+            # Log what we're passing
+            if forecasts_json == "{}":
+                logger.warning("    Missing forecasts data")
+            if rules_json == "{}":
+                logger.warning("    Missing rules data")
+            else:
+                # Parse to check rule count
+                try:
+                    rules_obj = json.loads(rules_json)
+                    rules_list = rules_obj.get("top_rules", []) or rules_obj.get("rules", [])
+                    logger.info(f"      - Passing {len(rules_list)} rules to Recommendation Agent")
             
             # Generate strategic recommendations (combined tool)
             logger.info("      - Simulating rules and generating top 3 recommendations...")
@@ -811,7 +824,10 @@ class AgentPipeline:
                 return {"success": False, "error": result_data.get("error")}
             
             recommendations = result_data.get("recommendations", [])
+            per_segment_impacts = result_data.get("per_segment_impacts", {})
+            
             logger.info(f"      - Generated {len(recommendations)} strategic recommendations")
+            logger.info(f"      - Captured per-segment impacts for {sum(len(impacts) for impacts in per_segment_impacts.values())} segment records")
             
             for rec in recommendations:
                 logger.info(f"        Recommendation #{rec.get('rank')}: {rec.get('rule_count')} rules, "
@@ -823,6 +839,7 @@ class AgentPipeline:
                 "data": {
                     "recommendations": result_data,
                     "top_3": recommendations,
+                    "per_segment_impacts": per_segment_impacts,
                     "generated_at": datetime.utcnow().isoformat()
                 }
             }
@@ -872,12 +889,22 @@ class AgentPipeline:
             return {"success": False, "error": str(e)}
     
     async def _save_run_record(self, record: Dict[str, Any]) -> None:
-        """Save pipeline run record to MongoDB."""
+        """
+        Save pipeline run record to MongoDB.
+        
+        Stores to two collections:
+        1. pipeline_results: Complete pipeline execution record
+        2. pricing_strategies: Per-segment impacts for each recommendation (if available)
+        """
         try:
             import pymongo
             
             client = pymongo.MongoClient(settings.mongodb_url)
             db = client[settings.mongodb_db_name]
+            
+            # ====================================================================
+            # 1. Save to pipeline_results collection (complete record)
+            # ====================================================================
             collection = db["pipeline_results"]
             
             # Convert datetime objects for MongoDB
@@ -894,11 +921,49 @@ class AgentPipeline:
                 upsert=True
             )
             
+            logger.debug(f"Pipeline record saved to pipeline_results: {record['run_id']}")
+            
+            # ====================================================================
+            # 2. Save to pricing_strategies collection (per-segment impacts)
+            # ====================================================================
+            # Extract per_segment_impacts from recommendations phase
+            per_segment_impacts = (
+                record.get("results", {})
+                .get("recommendations", {})
+                .get("per_segment_impacts", {})
+            )
+            
+            if per_segment_impacts and any(per_segment_impacts.values()):
+                strategies_collection = db["pricing_strategies"]
+                
+                # Build document for pricing_strategies
+                strategy_doc = {
+                    "pipeline_run_id": record["run_id"],
+                    "timestamp": record.get("completed_at", datetime.utcnow()),
+                    "per_segment_impacts": per_segment_impacts,
+                    "metadata": {
+                        "total_segments": sum(len(impacts) for impacts in per_segment_impacts.values()),
+                        "recommendation_count": len([k for k in per_segment_impacts.keys() if per_segment_impacts[k]]),
+                        "generated_at": datetime.utcnow().isoformat()
+                    }
+                }
+                
+                # Upsert by pipeline_run_id
+                strategies_collection.update_one(
+                    {"pipeline_run_id": record["run_id"]},
+                    {"$set": strategy_doc},
+                    upsert=True
+                )
+                
+                logger.debug(f"Per-segment impacts saved to pricing_strategies: {strategy_doc['metadata']['total_segments']} records")
+            else:
+                logger.warning("No per_segment_impacts found in recommendation results, skipping pricing_strategies update")
+            
             client.close()
-            logger.debug(f"Pipeline record saved: {record['run_id']}")
             
         except Exception as e:
             logger.error(f"Failed to save pipeline record: {e}")
+
 
 
 # Global pipeline instance

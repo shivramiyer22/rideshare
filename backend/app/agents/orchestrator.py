@@ -211,6 +211,7 @@ try:
         "  - Competitor comparison and competitive analysis "
         "  - Events, traffic, news data analysis "
         "  - Customer segments, location patterns "
+        "  - Segment Dynamic Pricing Report queries (forecast pricing for all/specific segments) "
         "\n"
         "Pricing Agent - for: "
         "  - Price calculations for NEW rides "

@@ -104,13 +104,35 @@ async def get_orders():
         if database is None:
             raise HTTPException(status_code=500, detail="Database connection not available")
         
-        collection = database["ride_orders"]
+        # Use 'orders' collection (actual collection name in MongoDB)
+        collection = database["orders"]
         cursor = collection.find({}).sort("created_at", -1).limit(100)
         orders = await cursor.to_list(length=100)
         
         # Convert MongoDB documents to OrderResponse format
         result = []
         for order in orders:
+            # Parse datetime strings if they're strings
+            created_at = order.get("created_at")
+            if isinstance(created_at, str):
+                try:
+                    from dateutil import parser
+                    created_at = parser.parse(created_at)
+                except:
+                    created_at = datetime.utcnow()
+            elif not isinstance(created_at, datetime):
+                created_at = datetime.utcnow()
+            
+            updated_at = order.get("updated_at")
+            if isinstance(updated_at, str):
+                try:
+                    from dateutil import parser
+                    updated_at = parser.parse(updated_at)
+                except:
+                    updated_at = datetime.utcnow()
+            elif not isinstance(updated_at, datetime):
+                updated_at = datetime.utcnow()
+            
             result.append(OrderResponse(
                 id=order.get("id", str(order.get("_id", ""))),
                 user_id=order.get("user_id", ""),
@@ -131,9 +153,9 @@ async def get_orders():
                 # Legacy fields
                 pricing_tier=order.get("pricing_tier", order.get("pricing_model", "STANDARD")),
                 priority=order.get("priority", "P2"),
-                price=order.get("price", order.get("estimated_price")),
-                created_at=order.get("created_at", datetime.utcnow()),
-                updated_at=order.get("updated_at", datetime.utcnow())
+                price=order.get("price", order.get("estimated_price", 0.0)),
+                created_at=created_at,
+                updated_at=updated_at
             ))
         return result
     except HTTPException:
@@ -151,11 +173,33 @@ async def get_order(order_id: str):
         if database is None:
             raise HTTPException(status_code=500, detail="Database connection not available")
         
-        collection = database["ride_orders"]
+        # Use 'orders' collection (actual collection name in MongoDB)
+        collection = database["orders"]
         order = await collection.find_one({"id": order_id})
         
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
+        
+        # Parse datetime strings if they're strings
+        created_at = order.get("created_at")
+        if isinstance(created_at, str):
+            try:
+                from dateutil import parser
+                created_at = parser.parse(created_at)
+            except:
+                created_at = datetime.utcnow()
+        elif not isinstance(created_at, datetime):
+            created_at = datetime.utcnow()
+        
+        updated_at = order.get("updated_at")
+        if isinstance(updated_at, str):
+            try:
+                from dateutil import parser
+                updated_at = parser.parse(updated_at)
+            except:
+                updated_at = datetime.utcnow()
+        elif not isinstance(updated_at, datetime):
+            updated_at = datetime.utcnow()
         
         return OrderResponse(
             id=order.get("id", str(order.get("_id", ""))),
@@ -177,9 +221,9 @@ async def get_order(order_id: str):
             # Legacy fields
             pricing_tier=order.get("pricing_tier", order.get("pricing_model", "STANDARD")),
             priority=order.get("priority", "P2"),
-            price=order.get("price", order.get("estimated_price")),
-            created_at=order.get("created_at", datetime.utcnow()),
-            updated_at=order.get("updated_at", datetime.utcnow())
+            price=order.get("price", order.get("estimated_price", 0.0)),
+            created_at=created_at,
+            updated_at=updated_at
         )
     except HTTPException:
         raise
@@ -289,8 +333,8 @@ async def create_order(order: OrderCreate):
             "updated_at": now
         }
         
-        # Save to MongoDB (ride_orders collection)
-        collection = database["ride_orders"]
+        # Save to MongoDB (orders collection - the actual collection name)
+        collection = database["orders"]
         await collection.insert_one(order_doc)
         logger.info(f"Created order {order_id} with estimated price ${estimate['estimated_price']:.2f}")
         

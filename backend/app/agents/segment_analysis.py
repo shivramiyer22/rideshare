@@ -61,9 +61,11 @@ def analyze_segment_historical_data(
         if not database:
             logger.warning("Database not available for segment analysis")
             return {
-                "avg_price": 0.0,
-                "avg_distance": 0.0,
-                "avg_duration": 0.0,
+                "segment_avg_fcs_unit_price": 0.0,
+                "segment_avg_fcs_ride_duration": 0.0,
+                "segment_avg_riders_per_order": 0.0,
+                "segment_avg_drivers_per_order": 0.0,
+                "segment_demand_profile": "MEDIUM",
                 "sample_size": 0,
                 "data_source": "historical_rides"
             }
@@ -86,57 +88,84 @@ def analyze_segment_historical_data(
         if not rides or len(rides) == 0:
             logger.info(f"No historical data found for segment: {location_category}/{loyalty_tier}/{vehicle_type}/{pricing_model}")
             return {
-                "avg_price": 0.0,
-                "avg_distance": 0.0,
-                "avg_duration": 0.0,
+                "segment_avg_fcs_unit_price": 0.0,
+                "segment_avg_fcs_ride_duration": 0.0,
+                "segment_avg_riders_per_order": 0.0,
+                "segment_avg_drivers_per_order": 0.0,
+                "segment_demand_profile": "MEDIUM",
+                "sample_size": 0,
+                "data_source": "historical_rides"
+            }
+        
+        # Calculate averages with NEW duration/unit_price model
+        total_price = 0.0
+        total_duration = 0.0
+        total_riders = 0.0
+        total_drivers = 0.0
+        valid_count = 0
+        
+        for ride in rides:
+            price = ride.get("Historical_Cost_of_Ride", 0)
+            duration = ride.get("Expected_Ride_Duration", 0)  # Changed from "Time"
+            riders = ride.get("Number_Of_Riders", 0)
+            drivers = ride.get("Number_of_Drivers", 0)
+            
+            if price > 0 and duration > 0:  # Only count valid rides
+                total_price += price
+                total_duration += duration
+                total_riders += riders if riders > 0 else 1.0
+                total_drivers += drivers if drivers > 0 else 0.5
+                valid_count += 1
+        
+        if valid_count == 0:
+            return {
+                "segment_avg_fcs_unit_price": 0.0,
+                "segment_avg_fcs_ride_duration": 0.0,
+                "segment_avg_riders_per_order": 0.0,
+                "segment_avg_drivers_per_order": 0.0,
+                "segment_demand_profile": "MEDIUM",
                 "sample_size": 0,
                 "data_source": "historical_rides"
             }
         
         # Calculate averages
-        total_price = 0.0
-        total_distance = 0.0
-        total_duration = 0.0
-        valid_count = 0
+        avg_price = total_price / valid_count
+        avg_duration = total_duration / valid_count
+        avg_unit_price = avg_price / avg_duration if avg_duration > 0 else 0.0
+        avg_riders = total_riders / valid_count
+        avg_drivers = total_drivers / valid_count
         
-        for ride in rides:
-            price = ride.get("Historical_Cost_of_Ride", 0)
-            distance = ride.get("Distance", 0)
-            duration = ride.get("Time", 0)
-            
-            if price > 0 and distance > 0:  # Only count valid rides
-                total_price += price
-                total_distance += distance
-                total_duration += duration
-                valid_count += 1
+        # Calculate segment_demand_profile
+        driver_ratio = (avg_drivers / avg_riders) * 100 if avg_riders > 0 else 50
+        if driver_ratio < 34:
+            segment_demand_profile = "HIGH"
+        elif driver_ratio < 67:
+            segment_demand_profile = "MEDIUM"
+        else:
+            segment_demand_profile = "LOW"
         
-        if valid_count == 0:
-            return {
-                "avg_price": 0.0,
-                "avg_distance": 0.0,
-                "avg_duration": 0.0,
-                "sample_size": 0,
-                "data_source": "historical_rides"
-            }
-        
-        # Calculate and return averages
+        # Return NEW structure
         result = {
-            "avg_price": round(total_price / valid_count, 2),
-            "avg_distance": round(total_distance / valid_count, 2),
-            "avg_duration": round(total_duration / valid_count, 2),
+            "segment_avg_fcs_unit_price": round(avg_unit_price, 4),
+            "segment_avg_fcs_ride_duration": round(avg_duration, 2),
+            "segment_avg_riders_per_order": round(avg_riders, 2),
+            "segment_avg_drivers_per_order": round(avg_drivers, 2),
+            "segment_demand_profile": segment_demand_profile,
             "sample_size": valid_count,
             "data_source": "historical_rides"
         }
         
-        logger.info(f"Segment analysis: {valid_count} rides, avg_price=${result['avg_price']}, avg_distance={result['avg_distance']}mi")
+        logger.info(f"Segment analysis: {valid_count} rides, unit_price=${result['segment_avg_fcs_unit_price']}/min, duration={result['segment_avg_fcs_ride_duration']}min, demand={segment_demand_profile}")
         return result
     
     except Exception as e:
         logger.error(f"Error analyzing segment historical data: {e}")
         return {
-            "avg_price": 0.0,
-            "avg_distance": 0.0,
-            "avg_duration": 0.0,
+            "segment_avg_fcs_unit_price": 0.0,
+            "segment_avg_fcs_ride_duration": 0.0,
+            "segment_avg_riders_per_order": 0.0,
+            "segment_avg_drivers_per_order": 0.0,
+            "segment_demand_profile": "MEDIUM",
             "sample_size": 0,
             "data_source": "historical_rides",
             "error": str(e)
