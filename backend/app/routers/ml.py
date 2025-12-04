@@ -27,20 +27,53 @@ forecast_model = RideshareForecastModel()
 @router.post("/train")
 async def train_prophet_models() -> Dict[str, Any]:
     """
-    Train Prophet ML model on historical data from MongoDB.
+    Train Prophet ML model with 24 regressors on historical data from MongoDB.
     
     This endpoint:
-    1. Reads historical_rides from MongoDB (300+ orders required)
-    2. Trains a single Prophet model that covers all pricing types (CONTRACTED, STANDARD, CUSTOM)
-    3. Uses pricing_model as a regressor to learn pricing-type-specific patterns
+    1. Reads historical_rides + competitor_prices from MongoDB (300+ combined rows required)
+    2. Trains a single Prophet model with multi-dimensional forecasting
+    3. Uses 24 regressors (20 categorical + 4 numeric) for accurate predictions
     4. Saves model to models/ directory
     5. Returns training metrics
     
+    The 24 Regressors:
+    
+    **20 Categorical Regressors:**
+    - Location_Category (Urban/Suburban/Rural)
+    - Customer_Loyalty_Status (Gold/Silver/Regular)
+    - Vehicle_Type (Economy/Premium)
+    - Pricing_Model (STANDARD/SURGE/CONTRACTED/CUSTOM)
+    - Hour (0-23)
+    - DayOfWeek (0-6)
+    - Month (1-12)
+    - IsWeekend (0/1)
+    - IsRushHour (0/1)
+    - IsHoliday (0/1)
+    - Weather_Conditions (Clear/Rain/Snow/etc)
+    - Traffic_Level (Low/Medium/High)
+    - Event_Type (None/Sports/Concert/etc)
+    - Competitor_Pricing_Strategy
+    - Driver_Availability_Level (Low/Medium/High)
+    - Route_Popularity (Low/Medium/High)
+    - Payment_Method (Card/Cash/Digital)
+    - Booking_Channel (App/Web/Phone)
+    - Service_Class (Standard/Premium)
+    - Demand_Profile (HIGH/MEDIUM/LOW)
+    
+    **4 Numeric Regressors:**
+    - num_riders (Number_Of_Riders)
+    - num_drivers (Number_of_Drivers)
+    - ride_duration (Expected_Ride_Duration in minutes)
+    - unit_price (Historical_Unit_Price in $/minute)
+    
     The model learns:
-    - Weekly patterns (Friday/Saturday busier)
-    - Daily patterns (rush hours)
-    - Trends over time
-    - How each pricing type affects demand
+    - Weekly/daily patterns (seasonality)
+    - Hourly rush patterns
+    - Weather and traffic impacts
+    - Pricing model effects on demand
+    - Loyalty tier behavior differences
+    - Location-specific trends
+    - Vehicle type demand patterns
     
     Returns:
         Dictionary with:
@@ -49,6 +82,7 @@ async def train_prophet_models() -> Dict[str, Any]:
             - confidence: 0.80 (80% confidence intervals)
             - model_path: Path to saved model
             - training_rows: Number of rows used for training
+            - data_sources: Breakdown of HWCO vs competitor data
             - error: Error message if training failed
     """
     try:

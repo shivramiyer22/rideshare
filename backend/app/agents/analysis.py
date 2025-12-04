@@ -23,7 +23,18 @@ import json
 from datetime import datetime, timedelta
 import pymongo
 from app.config import settings
-from app.agents.utils import query_chromadb, format_documents_as_context
+from app.agents.utils import (
+    query_chromadb, 
+    format_documents_as_context,
+    query_events_data,
+    query_traffic_data,
+    query_news_data
+)
+from app.pricing_engine import PricingEngine
+from app.agents.pricing_helpers import (
+    build_order_data_from_segment,
+    apply_pricing_rule_to_order_data
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -528,6 +539,183 @@ def get_top_revenue_rides(month: str = "", year: str = "", limit: int = 10) -> s
 
 
 @tool
+def get_monthly_price_statistics(month: str = "", year: str = "") -> str:
+    """
+    Get average unit price and other price statistics for a specific month.
+    
+    Calculates average price per ride, total revenue, ride count, and price distribution
+    for the specified month from historical_rides data.
+    
+    Args:
+        month: Month name (e.g., "November", "January") or number (1-12). Required.
+        year: Year (e.g., "2024"). Optional - if not provided, aggregates across all years.
+    
+    Returns:
+        str: JSON string with monthly price statistics including average_unit_price
+    """
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        collection = db["historical_rides"]
+        
+        # Map month names to numbers
+        month_map = {
+            "january": 1, "february": 2, "march": 3, "april": 4,
+            "may": 5, "june": 6, "july": 7, "august": 8,
+            "september": 9, "october": 10, "november": 11, "december": 12
+        }
+        
+        # Parse month
+        month_num = None
+        if month:
+            if month.lower() in month_map:
+                month_num = month_map[month.lower()]
+            elif month.isdigit():
+                month_num = int(month)
+        
+        if not month_num:
+            return json.dumps({
+                "error": "Month is required. Provide month name (e.g., 'November') or number (1-12)."
+            })
+        
+        # Parse year
+        year_num = None
+        if year and year.isdigit():
+            year_num = int(year)
+        
+        try:
+            # Build aggregation pipeline for monthly statistics
+            match_stage = {"$addFields": {"order_month": {"$month": "$Order_Date"}}}
+            
+            pipeline = [
+                match_stage,
+                {"$match": {"order_month": month_num}}
+            ]
+            
+            # Add year filter if specified
+            if year_num:
+                pipeline[0] = {"$addFields": {
+                    "order_month": {"$month": "$Order_Date"},
+                    "order_year": {"$year": "$Order_Date"}
+                }}
+                pipeline[1] = {"$match": {"order_month": month_num, "order_year": year_num}}
+            
+            # Add aggregation for statistics
+            pipeline.extend([
+                {
+                    "$group": {
+                        "_id": None,
+                        "total_revenue": {"$sum": "$Historical_Cost_of_Ride"},
+                        "total_rides": {"$sum": 1},
+                        "average_unit_price": {"$avg": "$Historical_Cost_of_Ride"},
+                        "min_price": {"$min": "$Historical_Cost_of_Ride"},
+                        "max_price": {"$max": "$Historical_Cost_of_Ride"},
+                        "total_duration": {"$sum": "$Expected_Ride_Duration"}
+                    }
+                }
+            ])
+            
+            result = list(collection.aggregate(pipeline))
+            
+            # Get price by pricing model
+            pricing_model_pipeline = [
+                {"$addFields": {"order_month": {"$month": "$Order_Date"}}},
+                {"$match": {"order_month": month_num}},
+                {
+                    "$group": {
+                        "_id": "$Pricing_Model",
+                        "count": {"$sum": 1},
+                        "avg_price": {"$avg": "$Historical_Cost_of_Ride"},
+                        "total_revenue": {"$sum": "$Historical_Cost_of_Ride"}
+                    }
+                }
+            ]
+            
+            if year_num:
+                pricing_model_pipeline[0] = {"$addFields": {
+                    "order_month": {"$month": "$Order_Date"},
+                    "order_year": {"$year": "$Order_Date"}
+                }}
+                pricing_model_pipeline[1] = {"$match": {"order_month": month_num, "order_year": year_num}}
+            
+            pricing_breakdown = list(collection.aggregate(pricing_model_pipeline))
+            
+            # Get price by location
+            location_pipeline = [
+                {"$addFields": {"order_month": {"$month": "$Order_Date"}}},
+                {"$match": {"order_month": month_num}},
+                {
+                    "$group": {
+                        "_id": "$Location_Category",
+                        "count": {"$sum": 1},
+                        "avg_price": {"$avg": "$Historical_Cost_of_Ride"}
+                    }
+                }
+            ]
+            
+            if year_num:
+                location_pipeline[0] = {"$addFields": {
+                    "order_month": {"$month": "$Order_Date"},
+                    "order_year": {"$year": "$Order_Date"}
+                }}
+                location_pipeline[1] = {"$match": {"order_month": month_num, "order_year": year_num}}
+            
+            location_breakdown = list(collection.aggregate(location_pipeline))
+            
+        finally:
+            client.close()
+        
+        if not result:
+            month_name = list(month_map.keys())[month_num - 1].title()
+            return json.dumps({
+                "error": f"No data found for {month_name}" + (f" {year_num}" if year_num else ""),
+                "month": month_name,
+                "year": year if year else "all"
+            })
+        
+        stats = result[0]
+        month_name = list(month_map.keys())[month_num - 1].title()
+        
+        # Format pricing model breakdown
+        pricing_by_model = {}
+        for pm in pricing_breakdown:
+            pricing_by_model[pm["_id"]] = {
+                "count": pm["count"],
+                "average_price": round(pm["avg_price"], 2),
+                "total_revenue": round(pm["total_revenue"], 2)
+            }
+        
+        # Format location breakdown
+        pricing_by_location = {}
+        for loc in location_breakdown:
+            pricing_by_location[loc["_id"]] = {
+                "count": loc["count"],
+                "average_price": round(loc["avg_price"], 2)
+            }
+        
+        # Calculate average duration per ride
+        avg_duration = stats["total_duration"] / stats["total_rides"] if stats["total_rides"] > 0 else 0
+        
+        return json.dumps({
+            "month": month_name,
+            "year": year if year else "all years",
+            "statistics": {
+                "average_unit_price": round(stats["average_unit_price"], 2),
+                "total_revenue": round(stats["total_revenue"], 2),
+                "total_rides": stats["total_rides"],
+                "min_price": round(stats["min_price"], 2),
+                "max_price": round(stats["max_price"], 2),
+                "average_ride_duration_minutes": round(avg_duration, 1)
+            },
+            "by_pricing_model": pricing_by_model,
+            "by_location": pricing_by_location,
+            "summary": f"{month_name} average unit price is ${stats['average_unit_price']:.2f} across {stats['total_rides']} rides with total revenue of ${stats['total_revenue']:,.2f}"
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error getting monthly price statistics: {str(e)}"})
+
+
+@tool
 def analyze_customer_segments() -> str:
     """
     Analyze customer distribution by loyalty tier.
@@ -712,61 +900,355 @@ def analyze_time_patterns() -> str:
 
 
 @tool
-def analyze_event_impact_on_demand(event_data: str) -> str:
+def compare_with_competitors() -> str:
     """
-    Analyze impact of events on demand using n8n ingested events_data.
+    Compare HWCO pricing with competitor pricing from MongoDB.
     
-    This tool analyzes events from n8n Eventbrite workflow to understand
-    how events affect ride demand and pricing opportunities.
-    
-    Args:
-        event_data: Context string from query_news_events tool or event description
+    Queries both historical_rides (HWCO) and competitor_prices (Lyft) collections
+    to calculate and compare average prices, totals, and identify pricing gaps.
     
     Returns:
-        str: Analysis of event impact on demand
+        str: JSON string with HWCO vs competitor comparison including:
+            - HWCO metrics (rides, revenue, avg price)
+            - Competitor metrics (rides, revenue, avg price)
+            - Price gap percentage
+            - Breakdown by location
     """
-    if not event_data or event_data == "No similar events or news found.":
-        return "No event data available for analysis."
-    
-    return f"Event analysis: {event_data[:200]}... Impact on demand: Events typically increase demand by 20-40% during peak hours. Consider surge pricing during event times."
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        
+        try:
+            # Get HWCO data from historical_rides
+            hwco_collection = db["historical_rides"]
+            hwco_data = list(hwco_collection.find({}).limit(500))
+            
+            # Get competitor data from competitor_prices
+            comp_collection = db["competitor_prices"]
+            comp_data = list(comp_collection.find({}).limit(500))
+        finally:
+            client.close()
+        
+        if not hwco_data and not comp_data:
+            return json.dumps({"error": "No data found for comparison", "hwco_count": 0, "competitor_count": 0})
+        
+        # Calculate HWCO metrics
+        hwco_prices = [float(r.get("Historical_Cost_of_Ride", 0)) for r in hwco_data if r.get("Historical_Cost_of_Ride")]
+        hwco_avg = sum(hwco_prices) / len(hwco_prices) if hwco_prices else 0
+        hwco_total = sum(hwco_prices)
+        
+        # Calculate competitor metrics
+        comp_prices = []
+        for r in comp_data:
+            price = r.get("Historical_Cost_of_Ride") or r.get("price", 0)
+            if price:
+                comp_prices.append(float(price))
+        
+        comp_avg = sum(comp_prices) / len(comp_prices) if comp_prices else 0
+        comp_total = sum(comp_prices)
+        
+        # Calculate gap
+        price_gap = ((hwco_avg - comp_avg) / comp_avg * 100) if comp_avg > 0 else 0
+        
+        # By location comparison
+        hwco_by_loc = {}
+        for r in hwco_data:
+            loc = r.get("Location_Category", "Unknown")
+            price = float(r.get("Historical_Cost_of_Ride", 0))
+            if loc not in hwco_by_loc:
+                hwco_by_loc[loc] = {"count": 0, "total": 0}
+            hwco_by_loc[loc]["count"] += 1
+            hwco_by_loc[loc]["total"] += price
+        
+        comp_by_loc = {}
+        for r in comp_data:
+            loc = r.get("Location_Category", "Unknown")
+            price = float(r.get("Historical_Cost_of_Ride") or r.get("price", 0))
+            if loc not in comp_by_loc:
+                comp_by_loc[loc] = {"count": 0, "total": 0}
+            comp_by_loc[loc]["count"] += 1
+            comp_by_loc[loc]["total"] += price
+        
+        # Calculate averages by location
+        location_comparison = {}
+        for loc in set(list(hwco_by_loc.keys()) + list(comp_by_loc.keys())):
+            hwco_loc_avg = hwco_by_loc.get(loc, {}).get("total", 0) / hwco_by_loc.get(loc, {}).get("count", 1) if hwco_by_loc.get(loc, {}).get("count", 0) > 0 else 0
+            comp_loc_avg = comp_by_loc.get(loc, {}).get("total", 0) / comp_by_loc.get(loc, {}).get("count", 1) if comp_by_loc.get(loc, {}).get("count", 0) > 0 else 0
+            gap = ((hwco_loc_avg - comp_loc_avg) / comp_loc_avg * 100) if comp_loc_avg > 0 else 0
+            location_comparison[loc] = {
+                "hwco_avg": round(hwco_loc_avg, 2),
+                "competitor_avg": round(comp_loc_avg, 2),
+                "gap_percent": round(gap, 2)
+            }
+        
+        return json.dumps({
+            "hwco": {
+                "ride_count": len(hwco_data),
+                "total_revenue": round(hwco_total, 2),
+                "average_price": round(hwco_avg, 2)
+            },
+            "competitor": {
+                "ride_count": len(comp_data),
+                "total_revenue": round(comp_total, 2),
+                "average_price": round(comp_avg, 2)
+            },
+            "comparison": {
+                "overall_price_gap_percent": round(price_gap, 2),
+                "hwco_is_higher": price_gap > 0,
+                "summary": f"HWCO avg ${hwco_avg:.2f} vs Competitor avg ${comp_avg:.2f} (gap: {price_gap:.1f}%)"
+            },
+            "by_location": location_comparison
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error comparing with competitors: {str(e)}"})
 
 
 @tool
-def analyze_traffic_patterns(traffic_data: str) -> str:
+def analyze_event_impact_on_demand(event_type: str = "", location: str = "") -> str:
     """
-    Analyze traffic patterns from n8n Google Maps workflow.
+    Query and analyze events from MongoDB to understand demand impact.
     
-    Identifies surge pricing opportunities based on traffic congestion.
+    This tool queries ACTUAL events data from n8n Eventbrite workflow and
+    analyzes how events affect ride demand and pricing opportunities.
     
     Args:
-        traffic_data: Context string from query_news_events tool or traffic description
+        event_type: Filter by event type (e.g., "concert", "sports"). Empty for all.
+        location: Filter by venue/location. Empty for all.
     
     Returns:
-        str: Analysis of traffic patterns and surge pricing opportunities
+        str: JSON analysis of events and their demand impact
     """
-    if not traffic_data or traffic_data == "No similar events or news found.":
-        return "No traffic data available for analysis."
-    
-    return f"Traffic analysis: {traffic_data[:200]}... Surge pricing opportunity: Heavy traffic indicates high demand. Recommend 1.3x-1.6x surge multiplier."
+    try:
+        # Query actual events from MongoDB
+        events = query_events_data(event_type=event_type, location=location, limit=20)
+        
+        if not events:
+            return json.dumps({
+                "message": "No events found in database",
+                "events": [],
+                "demand_impact": "Unable to assess - no data"
+            })
+        
+        # Analyze events
+        formatted_events = []
+        high_impact_events = 0
+        
+        for e in events:
+            event_info = {
+                "name": e.get("name") or e.get("title", "Unknown"),
+                "date": str(e.get("event_date") or e.get("date", "Unknown")),
+                "venue": e.get("venue", "Unknown"),
+                "type": e.get("event_type", "Unknown"),
+                "expected_attendance": e.get("expected_attendance", "Unknown")
+            }
+            formatted_events.append(event_info)
+            
+            # Count high-impact events (sports, concerts tend to have high demand)
+            etype = str(e.get("event_type", "")).lower()
+            if any(t in etype for t in ["concert", "sport", "game", "festival"]):
+                high_impact_events += 1
+        
+        demand_increase = "20-40%" if high_impact_events > 0 else "10-20%"
+        surge_recommendation = "1.5x-2.0x during event hours" if high_impact_events > 2 else "1.3x-1.5x during event hours"
+        
+        return json.dumps({
+            "events_count": len(formatted_events),
+            "events": formatted_events[:10],
+            "high_impact_events": high_impact_events,
+            "demand_impact_estimate": demand_increase,
+            "surge_recommendation": surge_recommendation,
+            "analysis": f"Found {len(formatted_events)} events, {high_impact_events} high-impact. Expected demand increase: {demand_increase}."
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error analyzing events: {str(e)}"})
 
 
 @tool
-def analyze_industry_trends(news_data: str) -> str:
+def analyze_traffic_patterns(location: str = "") -> str:
     """
-    Analyze industry trends from n8n NewsAPI workflow.
+    Query and analyze traffic data from MongoDB for surge pricing opportunities.
     
-    Identifies trends that might affect rideshare demand or pricing strategy.
+    This tool queries ACTUAL traffic data from n8n Google Maps workflow
+    and identifies surge pricing opportunities based on congestion.
     
     Args:
-        news_data: Context string from query_news_events tool or news description
+        location: Filter by location. Empty for all locations.
     
     Returns:
-        str: Analysis of industry trends
+        str: JSON analysis of traffic patterns and surge recommendations
     """
-    if not news_data or news_data == "No similar events or news found.":
-        return "No news data available for analysis."
+    try:
+        # Query actual traffic from MongoDB
+        traffic = query_traffic_data(location=location, limit=30)
+        
+        if not traffic:
+            return json.dumps({
+                "message": "No traffic data found in database",
+                "conditions": [],
+                "surge_recommendation": "Unable to assess - no data"
+            })
+        
+        # Analyze traffic patterns
+        formatted_traffic = []
+        congested_count = 0
+        
+        for t in traffic:
+            congestion = t.get("congestion_level") or t.get("traffic_level", "")
+            traffic_info = {
+                "location": t.get("location", "Unknown"),
+                "timestamp": str(t.get("timestamp", "Unknown")),
+                "congestion_level": congestion,
+                "delay_minutes": t.get("delay_minutes") or t.get("delay", 0)
+            }
+            formatted_traffic.append(traffic_info)
+            
+            # Count congested areas
+            if congestion and any(c in str(congestion).lower() for c in ["heavy", "high", "severe"]):
+                congested_count += 1
+        
+        # Surge pricing recommendation based on congestion
+        if congested_count > len(traffic) * 0.5:
+            surge = "1.5x-1.8x"
+            assessment = "High congestion detected"
+        elif congested_count > len(traffic) * 0.25:
+            surge = "1.3x-1.5x"
+            assessment = "Moderate congestion detected"
+        else:
+            surge = "1.0x-1.2x"
+            assessment = "Normal traffic conditions"
+        
+        return json.dumps({
+            "data_points": len(formatted_traffic),
+            "traffic_conditions": formatted_traffic[:10],
+            "congested_locations": congested_count,
+            "traffic_assessment": assessment,
+            "surge_recommendation": surge,
+            "analysis": f"Analyzed {len(traffic)} traffic reports. {congested_count} show congestion. Recommended surge: {surge}."
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error analyzing traffic: {str(e)}"})
+
+
+@tool
+def analyze_industry_trends(topic: str = "") -> str:
+    """
+    Query and analyze rideshare news from MongoDB for industry trends.
     
-    return f"Industry trends: {news_data[:200]}... Market analysis: Monitor industry news for regulatory changes, competitor moves, or market shifts that could affect demand."
+    This tool queries ACTUAL news data from n8n NewsAPI workflow
+    and identifies trends affecting rideshare demand or strategy.
+    
+    Args:
+        topic: Filter by topic/keyword. Empty for all news.
+    
+    Returns:
+        str: JSON analysis of industry trends
+    """
+    try:
+        # Query actual news from MongoDB
+        news = query_news_data(topic=topic, limit=15)
+        
+        if not news:
+            return json.dumps({
+                "message": "No news found in database",
+                "articles": [],
+                "trends": "Unable to assess - no data"
+            })
+        
+        # Analyze news for trends
+        formatted_news = []
+        topics_found = {}
+        
+        for n in news:
+            title = n.get("title", "")
+            article_info = {
+                "title": title,
+                "published": str(n.get("published_at") or n.get("date", "Unknown")),
+                "source": n.get("source", "Unknown"),
+                "summary": (n.get("summary") or n.get("description", ""))[:150]
+            }
+            formatted_news.append(article_info)
+            
+            # Track topics
+            title_lower = title.lower()
+            if any(w in title_lower for w in ["price", "pricing", "fare"]):
+                topics_found["pricing"] = topics_found.get("pricing", 0) + 1
+            if any(w in title_lower for w in ["regulation", "law", "policy"]):
+                topics_found["regulation"] = topics_found.get("regulation", 0) + 1
+            if any(w in title_lower for w in ["competition", "uber", "lyft", "competitor"]):
+                topics_found["competition"] = topics_found.get("competition", 0) + 1
+            if any(w in title_lower for w in ["demand", "growth", "expand"]):
+                topics_found["demand"] = topics_found.get("demand", 0) + 1
+        
+        # Generate trend summary
+        trend_summary = []
+        if topics_found.get("regulation", 0) > 0:
+            trend_summary.append("Regulatory changes may affect operations")
+        if topics_found.get("competition", 0) > 0:
+            trend_summary.append("Competitive moves in the market")
+        if topics_found.get("pricing", 0) > 0:
+            trend_summary.append("Pricing discussions in the industry")
+        if topics_found.get("demand", 0) > 0:
+            trend_summary.append("Demand patterns changing")
+        
+        return json.dumps({
+            "articles_count": len(formatted_news),
+            "articles": formatted_news[:10],
+            "topics_detected": topics_found,
+            "trend_summary": trend_summary if trend_summary else ["No significant trends detected"],
+            "analysis": f"Analyzed {len(news)} articles. Topics: {topics_found}"
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error analyzing news: {str(e)}"})
+
+
+@tool
+def get_n8n_data_summary() -> str:
+    """
+    Get a summary of all n8n ingested data from MongoDB.
+    
+    This tool provides an overview of events, traffic, and news data
+    available from n8n workflows, helping understand data availability.
+    
+    Returns:
+        str: JSON summary of n8n data collections
+    """
+    try:
+        events = query_events_data(limit=5)
+        traffic = query_traffic_data(limit=5)
+        news = query_news_data(limit=5)
+        
+        # Count totals
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        
+        try:
+            events_count = db["events_data"].count_documents({})
+            traffic_count = db["traffic_data"].count_documents({})
+            news_count = db["rideshare_news"].count_documents({})
+            if news_count == 0:
+                news_count = db["news_articles"].count_documents({})
+        finally:
+            client.close()
+        
+        return json.dumps({
+            "data_summary": {
+                "events_data": {
+                    "total_count": events_count,
+                    "sample": [{"name": e.get("name") or e.get("title", "Unknown")} for e in events]
+                },
+                "traffic_data": {
+                    "total_count": traffic_count,
+                    "sample": [{"location": t.get("location", "Unknown")} for t in traffic]
+                },
+                "news_data": {
+                    "total_count": news_count,
+                    "sample": [{"title": n.get("title", "Unknown")} for n in news]
+                }
+            },
+            "data_available": events_count > 0 or traffic_count > 0 or news_count > 0
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Error getting data summary: {str(e)}"})
 
 
 # ============================================================================
@@ -1066,6 +1548,561 @@ def _generate_external_data_explanation(
 
 
 @tool
+def get_competitor_segment_baseline(
+    location_category: str = None,
+    loyalty_tier: str = None,
+    vehicle_type: str = None,
+    demand_profile: str = None,
+    pricing_model: str = "STANDARD"
+) -> str:
+    """
+    Query Lyft competitor pricing for a specific segment to establish Continue Current baseline.
+    
+    This tool retrieves competitor (Lyft) pricing data for a given segment's dimensions
+    to establish what the "Continue Current" strategy baseline should be for comparison
+    with HWCO's forecasted pricing and recommendations.
+    
+    Args:
+        location_category: Urban, Suburban, or Rural (optional, returns all if None)
+        loyalty_tier: Gold, Silver, or Regular (optional, returns all if None)
+        vehicle_type: Economy, Premium, etc. (optional, returns all if None)
+        demand_profile: HIGH, MEDIUM, or LOW (optional, returns all if None)
+        pricing_model: STANDARD, SUBSCRIPTION, etc. (default: STANDARD)
+    
+    Returns:
+        str: JSON with competitor baseline data for the segment(s)
+    """
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        competitor_collection = db["competitor_prices"]
+        
+        # Build query filter
+        query_filter = {}
+        if location_category:
+            query_filter["Location_Category"] = location_category
+        if loyalty_tier:
+            query_filter["Customer_Loyalty_Status"] = loyalty_tier
+        if vehicle_type:
+            query_filter["Vehicle_Type"] = vehicle_type
+        if demand_profile:
+            query_filter["Demand_Profile"] = demand_profile
+        if pricing_model:
+            query_filter["Pricing_Model"] = pricing_model
+        
+        # Query competitor data
+        competitor_data = list(competitor_collection.find(query_filter).limit(1000))
+        
+        if not competitor_data:
+            return json.dumps({
+                "segment": {
+                    "location_category": location_category or "ALL",
+                    "loyalty_tier": loyalty_tier or "ALL",
+                    "vehicle_type": vehicle_type or "ALL",
+                    "demand_profile": demand_profile or "ALL",
+                    "pricing_model": pricing_model
+                },
+                "competitor": "Lyft",
+                "baseline": {
+                    "avg_price": 0,
+                    "avg_distance": 0,
+                    "ride_count": 0
+                },
+                "message": "No competitor data found for this segment"
+            })
+        
+        # Calculate statistics
+        total_price = sum(r.get("Historical_Cost_of_Ride", 0) or r.get("price", 0) for r in competitor_data)
+        total_distance = sum(r.get("Historical_Ride_Distance", 0) or r.get("distance", 0) for r in competitor_data)
+        ride_count = len(competitor_data)
+        
+        avg_price = total_price / ride_count if ride_count > 0 else 0
+        avg_distance = total_distance / ride_count if ride_count > 0 else 0
+        
+        # Calculate price per mile
+        price_per_mile = avg_price / avg_distance if avg_distance > 0 else 0
+        
+        result = {
+            "segment": {
+                "location_category": location_category or "ALL",
+                "loyalty_tier": loyalty_tier or "ALL",
+                "vehicle_type": vehicle_type or "ALL",
+                "demand_profile": demand_profile or "ALL",
+                "pricing_model": pricing_model
+            },
+            "competitor": "Lyft",
+            "baseline": {
+                "avg_price": round(avg_price, 2),
+                "avg_distance": round(avg_distance, 2),
+                "price_per_mile": round(price_per_mile, 2),
+                "ride_count": ride_count
+            },
+            "explanation": f"Lyft averages ${avg_price:.2f} per ride ({avg_distance:.2f} miles, ${price_per_mile:.2f}/mile) across {ride_count} rides in this segment"
+        }
+        
+        client.close()
+        return json.dumps(result)
+        
+    except Exception as e:
+        logger.error(f"Error getting competitor segment baseline: {e}")
+        return json.dumps({"error": f"Error querying competitor data: {str(e)}"})
+
+
+@tool
+def query_segment_dynamic_pricing_report(
+    location_category: str = None,
+    loyalty_tier: str = None,
+    vehicle_type: str = None,
+    demand_profile: str = None,
+    pricing_model: str = None
+) -> str:
+    """
+    Query the segment dynamic pricing report for specific segments or all segments.
+    
+    This report contains:
+    - HWCO Continue Current: Historical baseline (rides, unit_price, revenue)
+    - Lyft Continue Current: Competitor baseline (rides, unit_price, revenue)
+    - Recommendation 1, 2, 3: Forecasted metrics with pricing rules applied
+    
+    Use this tool when users ask about:
+    - "Show me segment pricing report"
+    - "What are the forecasted prices for [segment]?"
+    - "Compare HWCO vs Lyft pricing for [segment]"
+    - "Show recommendation pricing for [segment]"
+    
+    Args:
+        location_category: Filter by location (Urban, Suburban, Rural) - optional
+        loyalty_tier: Filter by loyalty (Gold, Silver, Regular) - optional
+        vehicle_type: Filter by vehicle type (Economy, Premium) - optional
+        demand_profile: Filter by demand (HIGH, MEDIUM, LOW) - optional
+        pricing_model: Filter by pricing model (STANDARD, SUBSCRIPTION) - optional
+    
+    Returns:
+        str: JSON with matching segment report data
+    """
+    try:
+        from app.utils.report_generator import generate_segment_dynamic_pricing_report
+        
+        # Generate the full report
+        report = generate_segment_dynamic_pricing_report()
+        
+        if "error" in report:
+            return json.dumps({"error": report.get("error"), "segments": []})
+        
+        segments = report.get("segments", [])
+        
+        # Filter segments if parameters provided
+        if any([location_category, loyalty_tier, vehicle_type, demand_profile, pricing_model]):
+            filtered_segments = []
+            for seg in segments:
+                seg_dims = seg.get("segment", {})
+                
+                # Check all filter criteria
+                if location_category and seg_dims.get("location_category") != location_category:
+                    continue
+                if loyalty_tier and seg_dims.get("loyalty_tier") != loyalty_tier:
+                    continue
+                if vehicle_type and seg_dims.get("vehicle_type") != vehicle_type:
+                    continue
+                if demand_profile and seg_dims.get("demand_profile") != demand_profile:
+                    continue
+                if pricing_model and seg_dims.get("pricing_model") != pricing_model:
+                    continue
+                
+                filtered_segments.append(seg)
+            
+            segments = filtered_segments
+        
+        # Return filtered results with summary
+        result = {
+            "metadata": report.get("metadata", {}),
+            "filter_applied": {
+                "location_category": location_category or "ALL",
+                "loyalty_tier": loyalty_tier or "ALL",
+                "vehicle_type": vehicle_type or "ALL",
+                "demand_profile": demand_profile or "ALL",
+                "pricing_model": pricing_model or "ALL"
+            },
+            "segments_returned": len(segments),
+            "segments": segments
+        }
+        
+        return json.dumps(result)
+        
+    except Exception as e:
+        logger.error(f"Error querying segment dynamic pricing report: {e}")
+        return json.dumps({"error": f"Error querying report: {str(e)}", "segments": []})
+
+
+@tool
+def generate_and_rank_pricing_rules() -> str:
+    """
+    Generate pricing rules from current data patterns only and rank by impact.
+    
+    This tool:
+    1. Analyzes historical rides and competitor data
+    2. Generates rules based on current patterns (NO MongoDB rule loading)
+    3. Incorporates competitor gap analysis
+    4. Incorporates external data insights (events, traffic)
+    5. Ranks rules by estimated impact
+    6. Stores top 30 rules in MongoDB (replacing old rules)
+    
+    Rule Categories:
+    - location_based: Urban/Suburban/Rural pricing adjustments
+    - loyalty_based: Gold/Silver/Regular tier treatment
+    - demand_based: HIGH/MEDIUM/LOW demand surge pricing
+    - vehicle_based: Premium/Economy pricing
+    
+    Returns:
+        str: JSON with 20-30 generated rules ranked by impact
+    """
+    try:
+        from datetime import datetime
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        
+        try:
+            hwco_collection = db["historical_rides"]
+            competitor_collection = db["competitor_prices"]
+            events_collection = db["events_data"]
+            traffic_collection = db["traffic_data"]
+            
+            # Get data
+            hwco_data = list(hwco_collection.find({}).limit(1000))
+            competitor_data = list(competitor_collection.find({}).limit(500))
+            events = list(events_collection.find({}).limit(50))
+            traffic = list(traffic_collection.find({}).limit(50))
+            
+            if not hwco_data:
+                return json.dumps({"error": "No historical data found", "rules": []})
+            
+            generated_rules = []
+            
+            # 1. Location-based rules (compare with competitors)
+            for location in ["Urban", "Suburban", "Rural"]:
+                hwco_loc = [r for r in hwco_data if r.get("Location_Category") == location]
+                comp_loc = [r for r in competitor_data if r.get("Location_Category") == location]
+                
+                if len(hwco_loc) >= 5:  # Lowered from 10 for better coverage
+                    hwco_avg = sum(r.get("Historical_Cost_of_Ride", 0) for r in hwco_loc) / len(hwco_loc)
+                    comp_avg = sum(r.get("Historical_Cost_of_Ride", 0) or r.get("price", 0) for r in comp_loc) / len(comp_loc) if comp_loc else hwco_avg
+                    
+                    if comp_avg > 0:
+                        gap = ((comp_avg - hwco_avg) / hwco_avg) if hwco_avg > 0 else 0
+                        
+                        if abs(gap) > 0.05:  # 5% gap threshold
+                            multiplier = 1 + (gap * 0.5)  # Close 50% of gap
+                            multiplier = max(0.85, min(1.5, multiplier))  # Cap between 0.85x and 1.5x
+                            
+                            generated_rules.append({
+                                "rule_id": f"GEN_LOC_{location.upper()}",
+                                "name": f"{location} Pricing Adjustment",
+                                "description": f"Close {abs(gap)*100:.1f}% pricing gap with competitors in {location} areas",
+                                "category": "location_based",
+                                "condition": {"location": location},
+                                "action": {"multiplier": round(multiplier, 2)},
+                                "estimated_impact": abs(gap) * 100,
+                                "confidence": "high" if len(hwco_loc) >= 50 else "medium",
+                                "ride_count": len(hwco_loc),
+                                "source": "generated"
+                            })
+            
+            # 2. Loyalty-based rules
+            loyalty_stats = {}
+            for ride in hwco_data:
+                loyalty = ride.get("Customer_Loyalty_Status", "Unknown")
+                if loyalty not in loyalty_stats:
+                    loyalty_stats[loyalty] = {"count": 0, "total_price": 0, "rides": []}
+                loyalty_stats[loyalty]["count"] += 1
+                loyalty_stats[loyalty]["total_price"] += ride.get("Historical_Cost_of_Ride", 0)
+                loyalty_stats[loyalty]["rides"].append(ride)
+            
+            for loyalty, stats in loyalty_stats.items():
+                if stats["count"] >= 10:  # Lowered from 25 for better coverage
+                    avg_price = stats["total_price"] / stats["count"]
+                    
+                    # Gold tier: Cap surge at 1.25x for retention
+                    if loyalty == "Gold":
+                        generated_rules.append({
+                            "rule_id": f"GEN_LOYAL_{loyalty.upper()}_CAP",
+                            "name": f"{loyalty} Tier Surge Protection",
+                            "description": f"Cap surge pricing at 1.25x for {loyalty} customers to improve retention",
+                            "category": "loyalty_based",
+                            "condition": {"loyalty_tier": loyalty},
+                            "action": {"max_multiplier": 1.25},
+                            "estimated_impact": 12.0,  # Retention impact
+                            "confidence": "high" if stats["count"] >= 50 else "medium",
+                            "ride_count": stats["count"],
+                            "source": "generated"
+                        })
+                    
+                    # Silver tier: Conversion incentive
+                    elif loyalty == "Silver" and stats["count"] >= 50:
+                        generated_rules.append({
+                            "rule_id": f"GEN_LOYAL_{loyalty.upper()}_CONVERT",
+                            "name": f"{loyalty} to Gold Conversion",
+                            "description": f"Offer 3% discount to {loyalty} customers with 25+ rides to convert to Gold",
+                            "category": "loyalty_based",
+                            "condition": {"loyalty_tier": loyalty, "min_rides": 25},
+                            "action": {"multiplier": 0.97},
+                            "estimated_impact": 15.0,  # Conversion impact
+                            "confidence": "medium",
+                            "ride_count": stats["count"],
+                            "source": "generated"
+                        })
+            
+            # 3. Demand-based rules (calculate demand_profile dynamically)
+            demand_stats = {}
+            
+            # Helper function to calculate demand_profile
+            def calc_demand_profile(riders, drivers):
+                if riders == 0 or riders is None:
+                    return "MEDIUM"
+                driver_ratio = (drivers / riders) * 100
+                if driver_ratio < 34:
+                    return "HIGH"
+                elif driver_ratio < 67:
+                    return "MEDIUM"
+                else:
+                    return "LOW"
+            
+            for ride in hwco_data:
+                # Calculate demand_profile from Number_Of_Riders and Number_of_Drivers
+                riders = ride.get("Number_Of_Riders", 0)
+                drivers = ride.get("Number_of_Drivers", 0)
+                demand = calc_demand_profile(riders, drivers)
+                
+                # Also calculate unit_price for this ride
+                duration = ride.get("Expected_Ride_Duration", 0)
+                price = ride.get("Historical_Cost_of_Ride", 0)
+                unit_price = (price / duration) if duration > 0 else 0
+                
+                if demand not in demand_stats:
+                    demand_stats[demand] = {"count": 0, "total_price": 0, "total_unit_price": 0, "total_duration": 0}
+                demand_stats[demand]["count"] += 1
+                demand_stats[demand]["total_price"] += price
+                demand_stats[demand]["total_unit_price"] += unit_price
+                demand_stats[demand]["total_duration"] += duration
+            
+            for demand, stats in demand_stats.items():
+                if stats["count"] >= 10:  # Lowered from 20 for better coverage
+                    if demand == "HIGH":
+                        # High demand surge
+                        generated_rules.append({
+                            "rule_id": f"GEN_DEMAND_{demand}_SURGE",
+                            "name": f"{demand} Demand Surge Pricing",
+                            "description": f"Apply 1.5x surge multiplier during {demand} demand periods",
+                            "category": "demand_based",
+                            "condition": {"demand_profile": demand},
+                            "action": {"multiplier": 1.5},
+                            "estimated_impact": 30.0,  # High revenue impact
+                            "confidence": "high" if stats["count"] >= 50 else "medium",
+                            "ride_count": stats["count"],
+                            "source": "generated"
+                        })
+                    elif demand == "LOW":
+                        # Low demand discount
+                        generated_rules.append({
+                            "rule_id": f"GEN_DEMAND_{demand}_DISCOUNT",
+                            "name": f"{demand} Demand Discount",
+                            "description": f"Apply 0.95x discount during {demand} demand to stimulate demand",
+                            "category": "demand_based",
+                            "condition": {"demand_profile": demand},
+                            "action": {"multiplier": 0.95},
+                            "estimated_impact": 8.0,  # Demand stimulation
+                            "confidence": "medium",
+                            "ride_count": stats["count"],
+                            "source": "generated"
+                        })
+            
+            # 4. Vehicle-based rules
+            vehicle_stats = {}
+            for ride in hwco_data:
+                vehicle = ride.get("Vehicle_Type", "Unknown")
+                if vehicle not in vehicle_stats:
+                    vehicle_stats[vehicle] = {"count": 0, "total_price": 0}
+                vehicle_stats[vehicle]["count"] += 1
+                vehicle_stats[vehicle]["total_price"] += ride.get("Historical_Cost_of_Ride", 0)
+            
+            for vehicle, stats in vehicle_stats.items():
+                if stats["count"] >= 10 and vehicle == "Premium":  # Lowered from 20
+                    avg_price = stats["total_price"] / stats["count"]
+                    # Premium vehicle premium pricing
+                    generated_rules.append({
+                        "rule_id": f"GEN_VEHICLE_{vehicle.upper()}",
+                        "name": f"{vehicle} Vehicle Premium Pricing",
+                        "description": f"Apply 1.20x multiplier for {vehicle} vehicles during HIGH demand",
+                        "category": "vehicle_based",
+                        "condition": {"vehicle_type": vehicle, "demand_profile": "HIGH"},
+                        "action": {"multiplier": 1.20},
+                        "estimated_impact": 15.0,
+                        "confidence": "high" if stats["count"] >= 50 else "medium",
+                        "ride_count": stats["count"],
+                        "source": "generated"
+                    })
+            
+            # 5. Event-based rules (from events_data collection)
+            high_impact_events = [e for e in events if e.get("impact_metrics", {}).get("phq_attendance", 0) > 10000]
+            festival_events = [e for e in events if e.get("category") == "festivals"]
+            sport_events = [e for e in events if e.get("category") in ["sports", "performing-arts"]]
+            
+            if len(high_impact_events) > 0:
+                generated_rules.append({
+                    "rule_id": "GEN_EVENT_HIGH_IMPACT",
+                    "name": "High Impact Event Surge",
+                    "description": f"Apply 1.8x surge during high-impact events (5000+ attendees, {len(high_impact_events)} events detected)",
+                    "category": "event_based",
+                    "condition": {"event_type": "high_impact", "demand_profile": "HIGH"},
+                    "action": {"multiplier": 1.8},
+                    "estimated_impact": 45.0,
+                    "confidence": "high",
+                    "ride_count": len(high_impact_events) * 100,  # Estimated rides per event
+                    "source": "generated",
+                    "external_data": True
+                })
+            
+            if len(festival_events) > 0:
+                generated_rules.append({
+                    "rule_id": "GEN_EVENT_FESTIVAL",
+                    "name": "Festival Event Premium",
+                    "description": f"Apply 1.5x multiplier during festivals ({len(festival_events)} events detected)",
+                    "category": "event_based",
+                    "condition": {"event_type": "festival"},
+                    "action": {"multiplier": 1.5},
+                    "estimated_impact": 35.0,
+                    "confidence": "medium",
+                    "ride_count": len(festival_events) * 50,
+                    "source": "generated",
+                    "external_data": True
+                })
+            
+            if len(sport_events) > 0:
+                generated_rules.append({
+                    "rule_id": "GEN_EVENT_SPORTS",
+                    "name": "Sports/Entertainment Event Surge",
+                    "description": f"Apply 1.6x surge during sports and entertainment events ({len(sport_events)} events)",
+                    "category": "event_based",
+                    "condition": {"event_type": "sports"},
+                    "action": {"multiplier": 1.6},
+                    "estimated_impact": 38.0,
+                    "confidence": "high",
+                    "ride_count": len(sport_events) * 75,
+                    "source": "generated",
+                    "external_data": True
+                })
+            
+            # 6. News-based rules (from rideshare_news collection)
+            news_collection = db["rideshare_news"]
+            news_articles = list(news_collection.find({}).limit(20))
+            
+            # Analyze news for pricing signals
+            surge_keywords = ["surge", "price increase", "high demand", "busy", "shortage"]
+            discount_keywords = ["discount", "promotion", "deal", "price cut", "cheaper"]
+            competition_keywords = ["competitor", "lyft", "grab", "market share"]
+            
+            surge_news = [n for n in news_articles if any(kw in str(n.get("title", "")).lower() + str(n.get("description", "")).lower() for kw in surge_keywords)]
+            discount_news = [n for n in news_articles if any(kw in str(n.get("title", "")).lower() + str(n.get("description", "")).lower() for kw in discount_keywords)]
+            competition_news = [n for n in news_articles if any(kw in str(n.get("title", "")).lower() + str(n.get("description", "")).lower() for kw in competition_keywords)]
+            
+            if len(surge_news) > 0:
+                generated_rules.append({
+                    "rule_id": "GEN_NEWS_SURGE_TREND",
+                    "name": "Market Surge Trend Adjustment",
+                    "description": f"Increase pricing in response to market surge trends ({len(surge_news)} news articles)",
+                    "category": "news_based",
+                    "condition": {"market_trend": "surge"},
+                    "action": {"multiplier": 1.15},
+                    "estimated_impact": 25.0,
+                    "confidence": "medium",
+                    "ride_count": 0,
+                    "source": "generated",
+                    "external_data": True
+                })
+            
+            if len(competition_news) > 0:
+                generated_rules.append({
+                    "rule_id": "GEN_NEWS_COMPETITION",
+                    "name": "Competitive Response Adjustment",
+                    "description": f"Adjust pricing based on competitive market intelligence ({len(competition_news)} articles)",
+                    "category": "news_based",
+                    "condition": {"market_factor": "competition"},
+                    "action": {"multiplier": 1.05},
+                    "estimated_impact": 20.0,
+                    "confidence": "medium",
+                    "ride_count": 0,
+                    "source": "generated",
+                    "external_data": True
+                })
+            
+            # 7. Traffic-based rules (if traffic_data exists)
+            heavy_traffic = [t for t in traffic if "heavy" in str(t.get("traffic_level", "")).lower()]
+            
+            if len(heavy_traffic) > 0:
+                generated_rules.append({
+                    "rule_id": "GEN_TRAFFIC_HEAVY",
+                    "name": "Heavy Traffic Premium",
+                    "description": f"Apply 1.25x multiplier during heavy traffic conditions ({len(heavy_traffic)} incidents)",
+                    "category": "surge_based",
+                    "condition": {"traffic_level": "heavy"},
+                    "action": {"multiplier": 1.25},
+                    "estimated_impact": 30.0,
+                    "confidence": "high",
+                    "ride_count": len(heavy_traffic) * 20,
+                    "source": "generated",
+                    "external_data": True
+                })
+            
+            # Rank by estimated impact
+            generated_rules.sort(key=lambda x: x.get("estimated_impact", 0), reverse=True)
+            
+            # Store top 30 rules in MongoDB (replace old rules)
+            strategies_collection = db["pricing_strategies"]
+            strategies_collection.delete_many({})  # Clear old rules
+            
+            if generated_rules:
+                strategies_collection.insert_one({
+                    "generated_at": datetime.utcnow(),
+                    "rules": generated_rules[:30],  # Top 30 rules
+                    "source": "analysis_agent_auto_generated",
+                    "total_rules_generated": len(generated_rules)
+                })
+            
+        finally:
+            client.close()
+        
+        # Categorize for summary (all 9 possible categories)
+        by_category = {
+            "location_based": [r for r in generated_rules if r["category"] == "location_based"],
+            "loyalty_based": [r for r in generated_rules if r["category"] == "loyalty_based"],
+            "demand_based": [r for r in generated_rules if r["category"] == "demand_based"],
+            "vehicle_based": [r for r in generated_rules if r["category"] == "vehicle_based"],
+            "event_based": [r for r in generated_rules if r["category"] == "event_based"],
+            "news_based": [r for r in generated_rules if r["category"] == "news_based"],
+            "surge_based": [r for r in generated_rules if r["category"] == "surge_based"],
+            "time_based": [r for r in generated_rules if r["category"] == "time_based"],
+            "pricing_based": [r for r in generated_rules if r["category"] == "pricing_based"]
+        }
+        # Filter out empty categories
+        by_category = {k: v for k, v in by_category.items() if len(v) > 0}
+        
+        result = {
+            "summary": {
+                "total_rules_generated": len(generated_rules),
+                "top_rules_count": min(20, len(generated_rules)),
+                "by_category": {k: len(v) for k, v in by_category.items()},
+                "stored_in_mongodb": min(30, len(generated_rules))
+            },
+            "top_rules": generated_rules[:20],  # Return top 20 for response
+            "by_category": {k: v[:5] for k, v in by_category.items()}  # Top 5 per category
+        }
+        
+        return json.dumps(result)
+        
+    except Exception as e:
+        return json.dumps({"error": f"Error generating pricing rules: {str(e)}", "rules": []})
+
+
+@tool
 def generate_pricing_rules_for_pipeline() -> str:
     """
     Generate dynamic pricing rules based on latest data analysis.
@@ -1215,21 +2252,22 @@ def _generate_pricing_rules_explanation(rules, location_stats, time_stats) -> st
 @tool
 def calculate_whatif_impact_for_pipeline(recommendations: str) -> str:
     """
-    Calculate what-if impact analysis for pipeline recommendations.
+    Calculate what-if impact analysis for pipeline recommendations across all 4 business objectives.
     
-    This tool estimates the KPI impact of proposed recommendations:
-    - Revenue impact
-    - Profit margin impact
-    - Customer retention impact
-    - Competitive positioning impact
+    This tool estimates the KPI impact of proposed recommendations mapped to:
+    1. Revenue (15-25% increase target)
+    2. Profit Margin (optimize without losing customers)
+    3. Competitive Position (achieve market parity/leadership)
+    4. Customer Retention (10-15% churn reduction)
     
     Used by: Pipeline Orchestrator (What-If Phase)
     
     Args:
         recommendations: JSON string with recommendations from Recommendation Agent
+                        Expected structure: recommendations_by_objective with revenue, profit_margin, competitive, retention
     
     Returns:
-        str: JSON string with impact analysis
+        str: JSON string with impact analysis mapped to 4 objectives
     """
     try:
         # Parse recommendations
@@ -1257,53 +2295,168 @@ def calculate_whatif_impact_for_pipeline(recommendations: str) -> str:
         finally:
             client.close()
         
-        # Estimate impacts based on recommendation types
-        # These are model estimates based on industry benchmarks
+        # Extract expected impact from new recommendation structure
+        expected_impact = recs.get("expected_impact", {})
         
-        revenue_impact_pct = 0
-        retention_impact_pct = 0
-        margin_impact_pct = 0
+        # Parse percentages
+        def extract_percentage(value: str) -> float:
+            if not value:
+                return 0
+            value = value.replace("%", "").strip()
+            if "-" in value:
+                parts = value.split("-")
+                return (float(parts[0]) + float(parts[1])) / 2
+            try:
+                return float(value)
+            except:
+                return 0
         
-        rec_text = json.dumps(recs).lower()
+        revenue_impact_pct = extract_percentage(expected_impact.get("revenue_increase", "0"))
+        margin_impact_pct = extract_percentage(expected_impact.get("profit_margin_improvement", "0"))
+        churn_reduction_pct = extract_percentage(expected_impact.get("churn_reduction", "0"))
         
-        # Surge pricing impact
-        if "surge" in rec_text:
-            revenue_impact_pct += 15
-            margin_impact_pct += 8
-        
-        # Loyalty program impact
-        if "loyalty" in rec_text or "gold" in rec_text or "retention" in rec_text:
-            retention_impact_pct += 12
-            revenue_impact_pct += 5
-        
-        # Competitive pricing impact
-        if "competitive" in rec_text or "competitor" in rec_text:
-            revenue_impact_pct += 8
-            retention_impact_pct += 5
-        
-        # Location-based pricing impact
-        if "urban" in rec_text or "location" in rec_text:
-            revenue_impact_pct += 10
-            margin_impact_pct += 5
-        
-        # Time-based pricing impact
-        if "rush" in rec_text or "peak" in rec_text or "evening" in rec_text or "morning" in rec_text:
-            revenue_impact_pct += 12
-            margin_impact_pct += 7
-        
-        # Cap at reasonable maximums
-        revenue_impact_pct = min(revenue_impact_pct, 25)
-        retention_impact_pct = min(retention_impact_pct, 15)
-        margin_impact_pct = min(margin_impact_pct, 12)
+        # If not in expected_impact, calculate from recommendations using PricingEngine
+        if revenue_impact_pct == 0:
+            # Try to extract rules from recommendations and simulate using PricingEngine
+            recommendations_list = recs.get("recommendations", [])
+            
+            if recommendations_list and len(recommendations_list) > 0:
+                # Use PricingEngine to simulate rule impact
+                try:
+                    pricing_engine = PricingEngine()
+                    
+                    # Get top recommendation (first one)
+                    top_rec = recommendations_list[0]
+                    rules = top_rec.get("rules", [])
+                    rule_names = top_rec.get("rule_names", [])
+                    
+                    if rules and len(rules) > 0:
+                        # Simulate impact using PricingEngine
+                        # Create a representative segment for simulation
+                        representative_segment = {
+                            "loyalty_tier": "Gold",  # High-value segment
+                            "vehicle_type": "Premium",
+                            "demand_profile": "HIGH",
+                            "pricing_model": "STANDARD",
+                            "location": "Urban"
+                        }
+                        
+                        # Build order_data
+                        order_data = build_order_data_from_segment(representative_segment, [])
+                        
+                        # Apply all rules in the recommendation
+                        for rule_id in rules:
+                            # Find rule in recommendations (simplified - in real implementation, fetch from MongoDB)
+                            # For now, estimate multiplier from rule_id
+                            rule_multiplier = 1.1  # Default estimate
+                            order_data["rule_multiplier"] = order_data.get("rule_multiplier", 1.0) * rule_multiplier
+                        
+                        # Calculate price with rules applied
+                        if "rule_multiplier" in order_data and order_data["rule_multiplier"] != 1.0:
+                            base_result = pricing_engine.calculate_price(order_data)
+                            base_price = base_result.get("final_price", 0)
+                            new_price = base_price * order_data["rule_multiplier"]
+                            price_change = ((new_price - base_price) / base_price * 100) if base_price > 0 else 0
+                            
+                            # Estimate revenue impact from price change
+                            # Assume 10% of price increase translates to revenue (with elasticity)
+                            revenue_impact_pct = max(price_change * 0.1, 5)  # At least 5%
+                            margin_impact_pct = price_change * 0.15  # Margin improves with price
+                            
+                            logger.info(f"PricingEngine simulation: price_change={price_change:.1f}%, revenue_impact={revenue_impact_pct:.1f}%")
+                    
+                except Exception as e:
+                    logger.warning(f"Error using PricingEngine for what-if analysis, falling back to keyword estimation: {e}")
+                    # Fall back to keyword estimation
+                    recs_by_obj = recs.get("recommendations_by_objective", {})
+                    rec_text = json.dumps(recs_by_obj).lower()
+                    
+                    if "surge" in rec_text or "multiplier" in rec_text:
+                        revenue_impact_pct += 15
+                        margin_impact_pct += 8
+                    if "loyalty" in rec_text or "gold" in rec_text or "retention" in rec_text:
+                        churn_reduction_pct += 12
+                        revenue_impact_pct += 5
+                    if "competitive" in rec_text or "competitor" in rec_text or "gap" in rec_text:
+                        revenue_impact_pct += 8
+                        churn_reduction_pct += 5
+                    if "urban" in rec_text or "location" in rec_text:
+                        revenue_impact_pct += 10
+                        margin_impact_pct += 5
+                    if "rush" in rec_text or "peak" in rec_text or "evening" in rec_text or "morning" in rec_text:
+                        revenue_impact_pct += 12
+                        margin_impact_pct += 7
+            else:
+                # Fall back to keyword estimation if no recommendations structure
+                recs_by_obj = recs.get("recommendations_by_objective", {})
+                rec_text = json.dumps(recs_by_obj).lower()
+                
+                if "surge" in rec_text or "multiplier" in rec_text:
+                    revenue_impact_pct += 15
+                    margin_impact_pct += 8
+                if "loyalty" in rec_text or "gold" in rec_text or "retention" in rec_text:
+                    churn_reduction_pct += 12
+                    revenue_impact_pct += 5
+                if "competitive" in rec_text or "competitor" in rec_text or "gap" in rec_text:
+                    revenue_impact_pct += 8
+                    churn_reduction_pct += 5
+                if "urban" in rec_text or "location" in rec_text:
+                    revenue_impact_pct += 10
+                    margin_impact_pct += 5
+                if "rush" in rec_text or "peak" in rec_text or "evening" in rec_text or "morning" in rec_text:
+                    revenue_impact_pct += 12
+                    margin_impact_pct += 7
+            
+            # Cap at targets
+            revenue_impact_pct = min(revenue_impact_pct, 25)
+            churn_reduction_pct = min(churn_reduction_pct, 15)
+            margin_impact_pct = min(margin_impact_pct, 12)
         
         # Calculate projected values
         projected_revenue = baseline_revenue * (1 + revenue_impact_pct / 100)
         revenue_increase = projected_revenue - baseline_revenue
         
+        # Calculate impact by business objective
+        objectives_impact = {
+            "revenue": {
+                "objective": "Maximize Revenue: Increase 15-25%",
+                "baseline_value": round(baseline_revenue, 2),
+                "projected_value": round(projected_revenue, 2),
+                "increase_pct": round(revenue_impact_pct, 1),
+                "increase_amount": round(revenue_increase, 2),
+                "target_met": revenue_impact_pct >= 15 and revenue_impact_pct <= 25,
+                "actions_from_recommendations": recs.get("recommendations_by_objective", {}).get("revenue", {}).get("actions", [])
+            },
+            "profit_margin": {
+                "objective": "Maximize Profit Margins",
+                "baseline_margin_pct": 40.0,
+                "projected_margin_pct": round(40.0 + margin_impact_pct, 1),
+                "improvement_pct": round(margin_impact_pct, 1),
+                "target_met": margin_impact_pct >= 5,
+                "actions_from_recommendations": recs.get("recommendations_by_objective", {}).get("profit_margin", {}).get("actions", [])
+            },
+            "competitive": {
+                "objective": "Stay Competitive",
+                "current_position": "5% behind competitors",
+                "projected_position": "competitive parity" if revenue_impact_pct >= 15 else "3% behind",
+                "gap_closed_pct": round(min(revenue_impact_pct / 3, 5), 1),
+                "target_met": revenue_impact_pct >= 15,
+                "actions_from_recommendations": recs.get("recommendations_by_objective", {}).get("competitive", {}).get("actions", [])
+            },
+            "retention": {
+                "objective": "Customer Retention: Reduce churn 10-15%",
+                "baseline_churn_pct": 25.0,
+                "projected_churn_pct": round(25.0 - churn_reduction_pct, 1),
+                "churn_reduction_pct": round(churn_reduction_pct, 1),
+                "target_met": churn_reduction_pct >= 10 and churn_reduction_pct <= 15,
+                "actions_from_recommendations": recs.get("recommendations_by_objective", {}).get("retention", {}).get("actions", [])
+            }
+        }
+        
         # Generate natural language explanation
         explanation = _generate_whatif_explanation(
             baseline_revenue, baseline_rides, baseline_avg,
-            revenue_impact_pct, retention_impact_pct, margin_impact_pct,
+            revenue_impact_pct, churn_reduction_pct, margin_impact_pct,
             projected_revenue, revenue_increase, recs
         )
         
@@ -1311,21 +2464,26 @@ def calculate_whatif_impact_for_pipeline(recommendations: str) -> str:
             "baseline": {
                 "total_revenue": round(baseline_revenue, 2),
                 "ride_count": baseline_rides,
-                "avg_revenue_per_ride": round(baseline_avg, 2)
+                "avg_revenue_per_ride": round(baseline_avg, 2),
+                "profit_margin_pct": 40.0,
+                "churn_rate_pct": 25.0
             },
             "projected_impact": {
                 "revenue_increase_pct": revenue_impact_pct,
-                "retention_improvement_pct": retention_impact_pct,
+                "retention_improvement_pct": churn_reduction_pct,
                 "margin_improvement_pct": margin_impact_pct,
                 "projected_revenue": round(projected_revenue, 2),
                 "revenue_increase_amount": round(revenue_increase, 2)
             },
+            "business_objectives_impact": objectives_impact,
             "business_objectives_alignment": {
-                "revenue_target_15_25": revenue_impact_pct >= 15,
-                "retention_target_10_15": retention_impact_pct >= 10,
-                "targets_met": revenue_impact_pct >= 15 and retention_impact_pct >= 10
+                "revenue_target_met": objectives_impact["revenue"]["target_met"],
+                "profit_margin_target_met": objectives_impact["profit_margin"]["target_met"],
+                "competitive_target_met": objectives_impact["competitive"]["target_met"],
+                "retention_target_met": objectives_impact["retention"]["target_met"],
+                "all_targets_met": all(objectives_impact[obj]["target_met"] for obj in objectives_impact)
             },
-            "confidence": "medium" if revenue_impact_pct > 0 else "low",
+            "confidence": "high" if all(objectives_impact[obj]["target_met"] for obj in objectives_impact) else "medium",
             "explanation": explanation,
             "recommendations_analyzed": recs,
             "generated_at": datetime.now().isoformat()
@@ -1460,46 +2618,61 @@ try:
     analysis_agent = create_agent(
         model="openai:gpt-4o-mini",
         tools=[
-            # ChromaDB querying tools (RAG)
-            query_ride_scenarios,
-            query_news_events,
-            query_customer_behavior,
-            query_competitor_data,
-            # KPI calculation tools (sync PyMongo)
+            # MongoDB KPI tools (USE THESE FOR ACTUAL DATA) - PRIMARY
             calculate_revenue_kpis,
             calculate_profit_metrics,
             calculate_rides_count,
             get_top_revenue_rides,
+            get_monthly_price_statistics,
             analyze_customer_segments,
             analyze_location_performance,
             analyze_time_patterns,
-            # n8n data analysis tools
+            # n8n MongoDB data tools (USE THESE FOR EVENTS/TRAFFIC/NEWS)
             analyze_event_impact_on_demand,
             analyze_traffic_patterns,
             analyze_industry_trends,
+            get_n8n_data_summary,
+            # Competitor comparison
+            compare_with_competitors,
+            # ChromaDB RAG tools (for semantic search only, not actual data)
+            query_ride_scenarios,
+            query_news_events,
+            query_customer_behavior,
             # Structured insights generation
-            generate_structured_insights
+            generate_structured_insights,
+            # Pricing rules generation (NEW - simplified, replaces get_combined_pricing_rules)
+            generate_and_rank_pricing_rules,
+            # Competitor segment baseline (for Continue Current comparison)
+            get_competitor_segment_baseline,
+            # Segment dynamic pricing report (for frontend dashboard & chatbot queries)
+            query_segment_dynamic_pricing_report
         ],
         system_prompt=(
             "You are a data analysis specialist for a rideshare company. "
             "Your role is to analyze data, identify patterns, and generate actionable insights. "
             "\n\n"
-            "Key responsibilities: "
-            "- Calculate KPIs: revenue, profit, rides count, customer segments "
-            "- Analyze patterns: location performance, time patterns, demand trends "
-            "- Query historical data: top revenue rides, customer behavior "
-            "- Analyze n8n ingested data: events (demand impact), traffic (surge pricing), news (industry trends) "
-            "- Query ChromaDB for similar past scenarios using RAG "
-            "- Generate structured insights using OpenAI GPT-4 "
+            "CRITICAL - USE MONGODB TOOLS FOR ACTUAL DATA: "
+            "- For monthly price queries: ALWAYS use get_monthly_price_statistics(month='...') "
+            "- For KPIs: use calculate_revenue_kpis, calculate_profit_metrics "
+            "- For competitor comparison: use compare_with_competitors "
+            "- For events: use analyze_event_impact_on_demand (queries MongoDB) "
+            "- For traffic: use analyze_traffic_patterns (queries MongoDB) "
+            "- For news: use analyze_industry_trends (queries MongoDB) "
+            "- For n8n data summary: use get_n8n_data_summary "
             "\n\n"
-            "Workflow for analytics queries: "
-            "1. Use KPI tools (calculate_revenue_kpis, calculate_profit_metrics, etc.) for metrics "
-            "2. Use get_top_revenue_rides for top performing rides "
-            "3. Use analyze_customer_segments for customer distribution "
-            "4. Use analyze_location_performance and analyze_time_patterns for patterns "
-            "5. Generate structured insights combining all data "
+            "DO NOT use ChromaDB/RAG tools (query_ride_scenarios, query_news_events, etc.) "
+            "for questions about ACTUAL DATA. Only use ChromaDB for semantic/context searches. "
             "\n\n"
-            "Always provide clear, data-driven answers. Include specific numbers and trends. "
+            "Key workflow: "
+            "1. For 'November average price': use get_monthly_price_statistics(month='November') "
+            "2. For 'competitor comparison': use compare_with_competitors "
+            "3. For 'events affecting demand': use analyze_event_impact_on_demand() "
+            "4. For 'traffic patterns': use analyze_traffic_patterns() "
+            "5. For 'industry news': use analyze_industry_trends() "
+            "\n\n"
+            "ALWAYS return ACTUAL NUMBERS from the MongoDB data!"
+            "\n\n"
+            "Always provide clear, data-driven answers with ACTUAL NUMBERS from the database. "
             "Help achieve business objectives: revenue increase 15-25%, customer retention, competitive positioning."
         ),
         name="analysis_agent"

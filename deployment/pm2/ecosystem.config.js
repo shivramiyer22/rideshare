@@ -29,12 +29,15 @@ module.exports = {
       cwd: path.join(projectRoot, 'frontend'),
       env: {
         NODE_ENV: 'production',
-        PORT: 3000
+        PORT: 3000,
+        NEXT_PUBLIC_API_URL: 'http://localhost:8000',
+        NEXT_PUBLIC_WS_URL: 'ws://localhost:8000',
       },
       instances: 1,
       exec_mode: 'fork',
       autorestart: true,
       watch: false,
+      max_memory_restart: '1G',
       error_file: path.join(projectRoot, 'logs', 'frontend-error.log'),
       out_file: path.join(projectRoot, 'logs', 'frontend-out.log'),
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z'
@@ -45,12 +48,16 @@ module.exports = {
       cwd: projectRoot,
       env: {
         N8N_PORT: 5678,
+        N8N_PROTOCOL: 'http',
+        N8N_HOST: 'localhost',
+        WEBHOOK_URL: 'http://localhost:5678/',
         NODE_ENV: 'production'
       },
       instances: 1,
       exec_mode: 'fork',
       autorestart: true,
       watch: false,
+      max_memory_restart: '512M',
       error_file: path.join(projectRoot, 'logs', 'n8n-error.log'),
       out_file: path.join(projectRoot, 'logs', 'n8n-out.log'),
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z'

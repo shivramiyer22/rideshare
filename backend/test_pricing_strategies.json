@@ -1,0 +1,96 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "generated_at": "2025-12-02T00:00:00Z",
+    "source": "test_upload"
+  },
+  "business_objectives": {
+    "primary_goals": [
+      {
+        "objective": "Revenue Growth",
+        "target": "15-25% increase",
+        "strategy": "Optimize pricing across all segments",
+        "priority": "high"
+      },
+      {
+        "objective": "Profit Margin",
+        "target": "Maintain 40%+ margin",
+        "strategy": "Cost-efficient pricing",
+        "priority": "high"
+      },
+      {
+        "objective": "Competitive Position",
+        "target": "Close 5% gap with Lyft",
+        "strategy": "Match competitive pricing",
+        "priority": "medium"
+      },
+      {
+        "objective": "Customer Retention",
+        "target": "Reduce churn by 10-15%",
+        "strategy": "Loyalty-based pricing",
+        "priority": "high"
+      }
+    ]
+  },
+  "pricing_rules": {
+    "rush_hour": [
+      {
+        "rule_id": "RUSH_MORNING",
+        "name": "Morning Rush Surge",
+        "description": "Apply surge pricing during morning rush hours (6-10 AM)",
+        "condition": {
+          "hour": [6, 7, 8, 9],
+          "is_rush_hour": true
+        },
+        "action": {
+          "multiplier": 1.15,
+          "max_multiplier": 1.25
+        },
+        "expected_impact": "+10-12% revenue"
+      }
+    ],
+    "location_based": [
+      {
+        "rule_id": "URBAN_PREMIUM",
+        "name": "Urban Premium Pricing",
+        "description": "Higher pricing for urban areas due to demand",
+        "condition": {
+          "location_category": "Urban"
+        },
+        "action": {
+          "multiplier": 1.10
+        },
+        "expected_impact": "+8% urban revenue"
+      }
+    ],
+    "loyalty_retention": [
+      {
+        "rule_id": "GOLD_PROTECTION",
+        "name": "Gold Customer Surge Protection",
+        "description": "Cap surge pricing for Gold loyalty customers",
+        "condition": {
+          "loyalty_tier": "Gold",
+          "is_surge": true
+        },
+        "action": {
+          "max_multiplier": 1.25
+        },
+        "expected_impact": "-12% churn for Gold"
+      }
+    ]
+  },
+  "expected_outcomes": {
+    "revenue_increase": {
+      "target": "18-23%",
+      "timeframe": "30 days"
+    },
+    "profit_margin": {
+      "target": "40%+",
+      "current": "38%"
+    },
+    "churn_reduction": {
+      "target": "12%",
+      "segment": "Gold customers"
+    }
+  }
+}

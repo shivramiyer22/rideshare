@@ -1,15 +1,303 @@
 """
 Routes and endpoints related to analytics.
 """
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Body
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
+from pydantic import BaseModel, Field
 from app.database import get_database
 import logging
+import json
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
+
+
+# ============================================================================
+# WHAT-IF ANALYSIS MODELS
+# ============================================================================
+
+class RecommendationInput(BaseModel):
+    """Input model for what-if analysis."""
+    recommendations_by_objective: Dict[str, Dict[str, Any]] = Field(
+        description="Recommendations mapped to 4 objectives: revenue, profit_margin, competitive, retention"
+    )
+    integrated_strategy: Optional[str] = Field(None, description="Overall strategy summary")
+    expected_impact: Optional[Dict[str, Any]] = Field(None, description="Expected impact metrics")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "recommendations_by_objective": {
+                    "revenue": {
+                        "actions": ["Apply 1.12x multiplier to urban routes"],
+                        "expected_impact": "+18% revenue",
+                        "priority": "high"
+                    },
+                    "profit_margin": {
+                        "actions": ["Reduce CUSTOM pricing to 2%"],
+                        "expected_impact": "+6% margin",
+                        "priority": "high"
+                    },
+                    "competitive": {
+                        "actions": ["Match rural pricing with competitors"],
+                        "expected_impact": "Close 5% gap",
+                        "priority": "medium"
+                    },
+                    "retention": {
+                        "actions": ["Cap surge at 1.25x for Gold customers"],
+                        "expected_impact": "-12% churn",
+                        "priority": "high"
+                    }
+                },
+                "integrated_strategy": "Urban pricing + loyalty protection",
+                "expected_impact": {
+                    "revenue_increase": "18-23%",
+                    "profit_margin_improvement": "5-7%",
+                    "churn_reduction": "12%"
+                }
+            }
+        }
+
+
+class WhatIfAnalysisResponse(BaseModel):
+    """Response model for what-if analysis."""
+    success: bool
+    baseline: Dict[str, Any]
+    projections: Dict[str, List[Dict[str, Any]]]  # 30d, 60d, 90d projections
+    business_objectives_impact: Dict[str, Dict[str, Any]]  # Impact per objective
+    confidence: str
+    visualization_data: Dict[str, Any]  # Formatted for charting
+    generated_at: str
+
+
+@router.post("/what-if-analysis", response_model=WhatIfAnalysisResponse)
+async def analyze_what_if(
+    recommendations: RecommendationInput = Body(...),
+    forecast_periods: List[int] = Query(
+        default=[30, 60, 90],
+        description="Forecast periods in days"
+    )
+):
+    """
+    Perform what-if impact analysis on recommendations across multiple forecast periods.
+    
+    This endpoint calculates the projected impact of recommendations on all 4 business objectives:
+    1. Revenue (target: 15-25% increase)
+    2. Profit Margin (target: optimize without losing customers)
+    3. Competitive Position (target: achieve market parity/leadership)
+    4. Customer Retention (target: 10-15% churn reduction)
+    
+    Returns structured data suitable for visualization with:
+    - Baseline metrics
+    - 30/60/90 day projections
+    - Impact breakdown by objective
+    - Chart-ready data for frontend
+    
+    Args:
+        recommendations: Recommendation data structure from Recommendation Agent
+        forecast_periods: List of forecast periods in days (default: [30, 60, 90])
+    
+    Returns:
+        Comprehensive what-if analysis with visualization data
+    """
+    try:
+        from app.agents.analysis import calculate_whatif_impact_for_pipeline
+        import pymongo
+        from app.config import settings
+        
+        logger.info(f"What-if analysis requested for periods: {forecast_periods}")
+        
+        # Get baseline metrics from MongoDB
+        client = pymongo.MongoClient(settings.mongodb_url)
+        db = client[settings.mongodb_db_name]
+        
+        try:
+            hwco_collection = db["historical_rides"]
+            
+            # Calculate baseline
+            baseline_revenue = 0
+            baseline_rides = 0
+            baseline_prices = []
+            
+            for doc in hwco_collection.find({}).limit(1000):
+                price = doc.get("Historical_Cost_of_Ride", 0)
+                baseline_revenue += price
+                baseline_rides += 1
+                if price > 0:
+                    baseline_prices.append(price)
+            
+            baseline_avg = baseline_revenue / baseline_rides if baseline_rides > 0 else 0
+            
+            # Extract impact percentages from recommendations
+            recs_dict = recommendations.dict()
+            expected_impact = recs_dict.get("expected_impact", {})
+            
+            # Parse impact percentages
+            def extract_percentage(value: str) -> float:
+                """Extract numeric percentage from strings like '18-23%' or '12%'."""
+                if not value:
+                    return 0
+                # Remove % and get average if range
+                value = value.replace("%", "").strip()
+                if "-" in value:
+                    parts = value.split("-")
+                    return (float(parts[0]) + float(parts[1])) / 2
+                try:
+                    return float(value)
+                except:
+                    return 0
+            
+            revenue_impact_pct = extract_percentage(expected_impact.get("revenue_increase", "0"))
+            margin_impact_pct = extract_percentage(expected_impact.get("profit_margin_improvement", "0"))
+            churn_impact_pct = extract_percentage(expected_impact.get("churn_reduction", "0"))
+            
+            # Generate projections for each forecast period
+            projections = {}
+            for period_days in forecast_periods:
+                period_name = f"{period_days}d"
+                period_projections = []
+                
+                # Generate daily projections
+                daily_revenue_increase = baseline_revenue * (revenue_impact_pct / 100) / period_days
+                
+                for day in range(1, period_days + 1):
+                    # Progressive impact (ramps up over time)
+                    progress_factor = day / period_days  # 0.0 to 1.0
+                    
+                    daily_impact = daily_revenue_increase * progress_factor
+                    projected_daily_revenue = (baseline_revenue / baseline_rides) * (1 + (revenue_impact_pct / 100) * progress_factor)
+                    
+                    period_projections.append({
+                        "day": day,
+                        "projected_revenue": round(projected_daily_revenue * baseline_rides, 2),
+                        "cumulative_increase": round(daily_impact * day, 2),
+                        "revenue_per_ride": round(projected_daily_revenue, 2),
+                        "progress_factor": round(progress_factor, 2)
+                    })
+                
+                projections[period_name] = period_projections
+            
+            # Calculate business objectives impact
+            objectives_impact = {
+                "revenue": {
+                    "objective": "Maximize Revenue: Increase 15-25%",
+                    "baseline": round(baseline_revenue, 2),
+                    "projected_30d": round(baseline_revenue * (1 + revenue_impact_pct / 100 * 0.3), 2),
+                    "projected_60d": round(baseline_revenue * (1 + revenue_impact_pct / 100 * 0.6), 2),
+                    "projected_90d": round(baseline_revenue * (1 + revenue_impact_pct / 100), 2),
+                    "impact_pct": round(revenue_impact_pct, 1),
+                    "target_met": revenue_impact_pct >= 15 and revenue_impact_pct <= 25,
+                    "confidence": "high" if revenue_impact_pct >= 15 else "medium"
+                },
+                "profit_margin": {
+                    "objective": "Maximize Profit Margins",
+                    "baseline_margin_pct": 40.0,  # Industry average
+                    "projected_margin_pct": round(40.0 + margin_impact_pct, 1),
+                    "improvement_pct": round(margin_impact_pct, 1),
+                    "target_met": margin_impact_pct >= 5,
+                    "confidence": "medium"
+                },
+                "competitive": {
+                    "objective": "Stay Competitive",
+                    "current_position": "5% behind competitors",
+                    "projected_position": "competitive parity" if revenue_impact_pct >= 15 else "3% behind",
+                    "gap_closed_pct": round(min(revenue_impact_pct / 3, 5), 1),
+                    "target_met": revenue_impact_pct >= 15,
+                    "confidence": "medium"
+                },
+                "retention": {
+                    "objective": "Customer Retention: Reduce churn 10-15%",
+                    "baseline_churn_pct": 25.0,  # Industry average
+                    "projected_churn_pct": round(25.0 - churn_impact_pct, 1),
+                    "churn_reduction_pct": round(churn_impact_pct, 1),
+                    "target_met": churn_impact_pct >= 10 and churn_impact_pct <= 15,
+                    "confidence": "high" if churn_impact_pct >= 10 else "low"
+                }
+            }
+            
+            # Format visualization data for charts
+            visualization_data = {
+                "revenue_trend": {
+                    "labels": [f"Day {p['day']}" for p in projections.get("30d", [])[:30:5]],  # Every 5 days
+                    "baseline": [baseline_revenue] * 6,
+                    "projected_30d": [p["projected_revenue"] for p in projections.get("30d", [])[:30:5]],
+                    "projected_60d": [p["projected_revenue"] for p in projections.get("60d", [])[:60:10]],
+                    "projected_90d": [p["projected_revenue"] for p in projections.get("90d", [])[:90:15]]
+                },
+                "objectives_summary": {
+                    "labels": ["Revenue", "Profit Margin", "Competitive", "Retention"],
+                    "baseline": [0, 40, 0, 25],
+                    "projected": [
+                        revenue_impact_pct,
+                        40 + margin_impact_pct,
+                        min(revenue_impact_pct / 3, 5),
+                        25 - churn_impact_pct
+                    ],
+                    "targets": [20, 45, 5, 15],  # Target values
+                    "target_met": [
+                        objectives_impact["revenue"]["target_met"],
+                        objectives_impact["profit_margin"]["target_met"],
+                        objectives_impact["competitive"]["target_met"],
+                        objectives_impact["retention"]["target_met"]
+                    ]
+                },
+                "kpi_cards": [
+                    {
+                        "title": "Revenue Increase",
+                        "value": f"{revenue_impact_pct:.1f}%",
+                        "target": "15-25%",
+                        "status": "success" if objectives_impact["revenue"]["target_met"] else "warning"
+                    },
+                    {
+                        "title": "Profit Margin",
+                        "value": f"+{margin_impact_pct:.1f}%",
+                        "target": "Optimize",
+                        "status": "success" if margin_impact_pct > 0 else "warning"
+                    },
+                    {
+                        "title": "Competitive Gap",
+                        "value": f"{objectives_impact['competitive']['gap_closed_pct']:.1f}% closed",
+                        "target": "Parity",
+                        "status": "success" if objectives_impact["competitive"]["target_met"] else "warning"
+                    },
+                    {
+                        "title": "Churn Reduction",
+                        "value": f"{churn_impact_pct:.1f}%",
+                        "target": "10-15%",
+                        "status": "success" if objectives_impact["retention"]["target_met"] else "warning"
+                    }
+                ]
+            }
+            
+        finally:
+            client.close()
+        
+        # Determine overall confidence
+        targets_met_count = sum(1 for obj in objectives_impact.values() if obj.get("target_met", False))
+        overall_confidence = "high" if targets_met_count >= 3 else "medium" if targets_met_count >= 2 else "low"
+        
+        return WhatIfAnalysisResponse(
+            success=True,
+            baseline={
+                "total_revenue": round(baseline_revenue, 2),
+                "ride_count": baseline_rides,
+                "avg_revenue_per_ride": round(baseline_avg, 2),
+                "profit_margin_pct": 40.0,
+                "churn_rate_pct": 25.0,
+                "market_position": "5% behind competitors"
+            },
+            projections=projections,
+            business_objectives_impact=objectives_impact,
+            confidence=overall_confidence,
+            visualization_data=visualization_data,
+            generated_at=datetime.utcnow().isoformat()
+        )
+        
+    except Exception as e:
+        logger.error(f"What-if analysis error: {e}")
+        raise HTTPException(status_code=500, detail=f"What-if analysis failed: {str(e)}")
 
 
 @router.get("/dashboard")
@@ -513,4 +801,178 @@ async def get_analytics_revenue(period: str = Query(default="30d", description="
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching analytics data: {str(e)}")
 
+
+@router.get("/pricing-strategies")
+async def get_pricing_strategies(
+    filter_by: Optional[str] = Query(
+        None,
+        description="Filter type: 'business_objectives', 'pricing_rules', 'pipeline_results', or 'all'",
+        regex="^(business_objectives|pricing_rules|pipeline_results|all)?$"
+    ),
+    category: Optional[str] = Query(
+        None,
+        description="Filter by category (e.g., 'rush_hour', 'location_based', 'metadata')"
+    ),
+    limit: int = Query(100, description="Maximum number of results to return", ge=1, le=1000),
+    include_pipeline_data: bool = Query(
+        False,
+        description="Include latest pipeline result with forecasts and recommendations"
+    )
+) -> Dict[str, Any]:
+    """
+    Get pricing strategies with flexible filtering for analytics dashboard.
+    
+    **Use Cases:**
+    - `filter_by=business_objectives` - Get business objectives only
+    - `filter_by=pricing_rules` - Get all pricing rules
+    - `filter_by=pipeline_results` - Get latest pipeline execution results
+    - `filter_by=all` or no filter - Get everything
+    - `category=rush_hour` - Get only rush hour rules
+    - `include_pipeline_data=true` - Include forecasts and recommendations
+    
+    **Returns:**
+    - Pricing rules with categories
+    - Business objectives with targets
+    - Pipeline results (forecasts, recommendations, what-if analysis)
+    - Summary statistics
+    
+    **Example for Dashboard:**
+    ```
+    GET /api/v1/analytics/pricing-strategies?filter_by=business_objectives&include_pipeline_data=true
+    ```
+    Returns business objectives + latest pipeline data for progress tracking.
+    """
+    try:
+        database = get_database()
+        if database is None:
+            raise HTTPException(status_code=500, detail="Database connection not available")
+        
+        collection = database["pricing_strategies"]
+        response_data = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "filter_applied": filter_by or "all",
+            "category_filter": category
+        }
+        
+        # Query based on filter
+        query = {}
+        
+        if filter_by == "business_objectives":
+            query["category"] = "business_objectives"
+        elif filter_by == "pricing_rules":
+            query["category"] = {"$nin": ["business_objectives", "metadata", "expected_outcomes"]}
+            query["source"] = "pricing_strategies_upload"
+        elif filter_by == "pipeline_results":
+            query["type"] = "pipeline_result"
+        elif category:
+            query["category"] = category
+        
+        # Execute query for uploaded strategies
+        if filter_by != "pipeline_results":
+            cursor = collection.find(query).limit(limit)
+            strategies = []
+            async for doc in cursor:
+                doc["_id"] = str(doc["_id"])
+                strategies.append(doc)
+            
+            response_data["strategies"] = strategies
+            response_data["count"] = len(strategies)
+            
+            # Group by category for summary
+            categories = {}
+            for strategy in strategies:
+                cat = strategy.get("category", "unknown")
+                if cat not in categories:
+                    categories[cat] = []
+                categories[cat].append(strategy)
+            
+            response_data["categories_summary"] = {
+                cat: len(items) for cat, items in categories.items()
+            }
+        
+        # Get latest pipeline result if requested or if filter is pipeline_results
+        if include_pipeline_data or filter_by == "pipeline_results":
+            pipeline_result = await collection.find_one(
+                {"type": "pipeline_result"},
+                sort=[("timestamp", -1)]
+            )
+            
+            if pipeline_result:
+                pipeline_result["_id"] = str(pipeline_result["_id"])
+                
+                # Extract key sections for dashboard
+                pipeline_summary = {
+                    "run_id": pipeline_result.get("run_id"),
+                    "timestamp": pipeline_result.get("timestamp"),
+                    "status": pipeline_result.get("status", "completed")
+                }
+                
+                # Add forecasts summary
+                if "forecasts" in pipeline_result:
+                    forecasts = pipeline_result["forecasts"]
+                    pipeline_summary["forecasts"] = {
+                        "segments_count": len(forecasts.get("segmented_forecasts", [])),
+                        "aggregated": forecasts.get("aggregated_forecasts", {})
+                    }
+                
+                # Add recommendations summary
+                if "recommendations" in pipeline_result:
+                    recs = pipeline_result["recommendations"]
+                    pipeline_summary["recommendations"] = {
+                        "top_3_count": len(recs.get("top_3", [])),
+                        "per_segment_impacts_count": len(recs.get("per_segment_impacts", [])),
+                        "top_3": recs.get("top_3", [])
+                    }
+                
+                # Add what-if analysis with business objectives
+                if "what_if_analysis" in pipeline_result:
+                    what_if = pipeline_result["what_if_analysis"]
+                    pipeline_summary["what_if_analysis"] = {
+                        "baseline": what_if.get("baseline", {}),
+                        "business_objectives_impact": what_if.get("business_objectives_impact", {}),
+                        "confidence": what_if.get("confidence", "unknown")
+                    }
+                    
+                    # Extract business objectives for easy access
+                    if "business_objectives_impact" in what_if:
+                        response_data["business_objectives_progress"] = {
+                            "revenue": {
+                                "target": "15-25% increase",
+                                "projected": what_if["business_objectives_impact"].get("revenue", {}).get("revenue_increase_pct", 0),
+                                "target_met": what_if["business_objectives_impact"].get("revenue", {}).get("target_met", False),
+                                "confidence": what_if["business_objectives_impact"].get("revenue", {}).get("confidence", "unknown")
+                            },
+                            "profit_margin": {
+                                "target": "40%+ margin",
+                                "projected": what_if["business_objectives_impact"].get("profit_margin", {}).get("projected_margin_pct", 0),
+                                "target_met": what_if["business_objectives_impact"].get("profit_margin", {}).get("target_met", False),
+                                "confidence": what_if["business_objectives_impact"].get("profit_margin", {}).get("confidence", "unknown")
+                            },
+                            "competitive": {
+                                "target": "Close 5% gap",
+                                "gap_closed_pct": what_if["business_objectives_impact"].get("competitive", {}).get("gap_closed_pct", 0),
+                                "target_met": what_if["business_objectives_impact"].get("competitive", {}).get("target_met", False),
+                                "confidence": what_if["business_objectives_impact"].get("competitive", {}).get("confidence", "unknown")
+                            },
+                            "retention": {
+                                "target": "10-15% churn reduction",
+                                "projected": what_if["business_objectives_impact"].get("retention", {}).get("churn_reduction_pct", 0),
+                                "target_met": what_if["business_objectives_impact"].get("retention", {}).get("target_met", False),
+                                "confidence": what_if["business_objectives_impact"].get("retention", {}).get("confidence", "unknown")
+                            }
+                        }
+                
+                # Add report metadata
+                if "report_metadata" in pipeline_result:
+                    pipeline_summary["report"] = pipeline_result["report_metadata"]
+                
+                response_data["pipeline_result"] = pipeline_summary
+        
+        return response_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching pricing strategies: {e}")
+        raise HTTPException(status_code=500, detail=f"Error fetching pricing strategies: {str(e)}")
 

@@ -66,20 +66,26 @@ def route_to_analysis_agent(query: str, context: Dict[str, Any] = None) -> str:
 @tool
 def route_to_pricing_agent(query: str, context: Dict[str, Any] = None) -> str:
     """
-    Route query to Pricing Agent for price calculations and explanations.
+    Route query to Pricing Agent for price calculations, estimations, and explanations.
     
     Use this for queries about:
-    - Price calculations
-    - Pricing explanations
-    - Price breakdowns
-    - Pricing strategies
+    - Price calculations and exact pricing
+    - Price ESTIMATIONS ("what would this cost?", "price preview")
+    - Pricing explanations and breakdowns
+    - Pricing strategies and competitor comparisons
+    - Historical pricing data
+    
+    NEW: Price Estimation Support
+    - User asks "what would a ride cost?" → Uses estimate_ride_price tool
+    - Provides segment-based estimates without creating orders
+    - Combines historical baseline + forecast predictions
     
     Args:
-        query: User query about pricing
+        query: User query about pricing or price estimation
         context: Optional conversation context
     
     Returns:
-        str: Pricing Agent response
+        str: Pricing Agent response with calculations or estimates
     """
     try:
         from app.agents.pricing import pricing_agent
@@ -197,23 +203,54 @@ try:
         "You are a chatbot orchestrator that routes user queries to specialist agents. "
         "Use OpenAI function calling to intelligently determine which agent(s) should handle each query. "
         "\n\n"
-        "Routing Intelligence: "
-        "- Revenue, analytics, KPIs, data analysis → Analysis Agent "
-        "- Price calculations, pricing explanations, price breakdowns → Pricing Agent "
-        "- Forecasts, predictions, demand forecasting, Prophet ML → Forecasting Agent "
-        "- Strategic recommendations, business advice, action plans → Recommendation Agent "
+        "ROUTING RULES (ALWAYS route to an agent - NEVER answer without routing): "
+        "\n"
+        "Analysis Agent - for: "
+        "  - Revenue, analytics, KPIs, data analysis "
+        "  - Historical data queries (monthly statistics, averages, totals) "
+        "  - Competitor comparison and competitive analysis "
+        "  - Events, traffic, news data analysis "
+        "  - Customer segments, location patterns "
+        "  - Segment Dynamic Pricing Report queries (forecast pricing for all/specific segments) "
+        "\n"
+        "Pricing Agent - for: "
+        "  - Price calculations for NEW rides "
+        "  - Price ESTIMATIONS ('what would this cost?', 'price preview') "
+        "  - Pricing explanations and breakdowns "
+        "  - Competitor pricing analysis "
+        "  - Historical pricing patterns "
+        "  - Segment-based price estimates (Urban/Suburban/Rural, Gold/Silver/Regular, Premium/Economy) "
+        "\n"
+        "Forecasting Agent - for: "
+        "  - Demand forecasts, predictions "
+        "  - ML/Prophet forecasts "
+        "  - Trend analysis "
+        "\n"
+        "Recommendation Agent - for: "
+        "  - Strategic recommendations "
+        "  - Business advice "
+        "  - Competitive positioning "
+        "  - HWCO vs competitor comparisons "
+        "\n\n"
+        "NEW: Price Estimation Queries "
+        "- When user asks 'what would a ride cost?' or 'price preview' → Route to Pricing Agent "
+        "- Examples: 'How much for Premium in Urban?', 'What's the price for Gold members?' "
+        "- Pricing Agent will use segment analysis to provide comprehensive estimates "
+        "- No order is created - this is just estimation/preview "
+        "\n\n"
+        "IMPORTANT: "
+        "- For 'competitor' questions → Try BOTH Analysis Agent AND Pricing Agent "
+        "- For 'HWCO vs competitor' → Route to Recommendation Agent (has get_competitor_comparison tool) "
+        "- For historical/past data → Analysis Agent "
+        "- For price estimates/preview → Pricing Agent "
+        "- ALWAYS call at least one agent - never give a generic response without data "
         "\n\n"
         "Multi-Agent Coordination: "
-        "- Some queries may need multiple agents (e.g., 'What's our revenue forecast and pricing strategy?') "
-        "- When multiple agents are needed, call them sequentially and synthesize their responses "
-        "- Combine responses into a coherent, comprehensive answer for the user "
+        "- Some queries may need multiple agents "
+        "- Call them sequentially and synthesize their responses "
+        "- Combine responses into a coherent answer "
         "\n\n"
-        "Context Management: "
-        "- Maintain conversation context across messages (you have access to previous messages) "
-        "- Pass relevant context to worker agents when routing "
-        "- Ensure smooth user experience with natural, helpful responses "
-        "\n\n"
-        "Always route queries to the appropriate agent(s) and return their responses to the user."
+        "ALWAYS route to the appropriate agent(s). Do NOT give generic responses without calling tools."
         ),
         name="orchestrator_agent"
     )
