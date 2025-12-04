@@ -94,11 +94,16 @@ def generate_segment_dynamic_pricing_report(pipeline_result_id: str = None) -> D
             )
             
             # Get HWCO historical baseline
+            # MongoDB has mixed case for Demand_Profile: "High", "Medium", "Low"
+            # Convert from uppercase (HIGH/MEDIUM/LOW) to title case
+            demand_profile_value = segment_dims.get("demand_profile", "Medium")
+            demand_profile_mongo = demand_profile_value.title() if demand_profile_value else "Medium"
+            
             hwco_query = {
                 "Location_Category": segment_dims.get("location_category"),
                 "Customer_Loyalty_Status": segment_dims.get("loyalty_tier"),
                 "Vehicle_Type": segment_dims.get("vehicle_type"),
-                "Demand_Profile": segment_dims.get("demand_profile"),
+                "Demand_Profile": demand_profile_mongo,  # Use title case: High/Medium/Low
                 "Pricing_Model": segment_dims.get("pricing_model", "STANDARD")
             }
             hwco_rides = list(historical_collection.find(hwco_query).limit(1000))
@@ -127,7 +132,14 @@ def generate_segment_dynamic_pricing_report(pipeline_result_id: str = None) -> D
                 hwco_explanation = "No HWCO historical data available for this segment. Unable to establish baseline metrics."
             
             # Get Lyft competitor baseline
-            lyft_query = hwco_query.copy()
+            # Use same query structure with title case Demand_Profile
+            lyft_query = {
+                "Location_Category": segment_dims.get("location_category"),
+                "Customer_Loyalty_Status": segment_dims.get("loyalty_tier"),
+                "Vehicle_Type": segment_dims.get("vehicle_type"),
+                "Demand_Profile": demand_profile_mongo,  # Use title case: High/Medium/Low
+                "Pricing_Model": segment_dims.get("pricing_model", "STANDARD")
+            }
             lyft_rides = list(competitor_collection.find(lyft_query).limit(1000))
             
             if lyft_rides:
