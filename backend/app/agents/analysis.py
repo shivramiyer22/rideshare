@@ -1941,21 +1941,113 @@ def generate_and_rank_pricing_rules() -> str:
                         "source": "generated"
                     })
             
-            # 5. Incorporate external data insights
-            high_impact_events = [e for e in events if e.get("expected_attendees", 0) > 5000]
-            heavy_traffic = [t for t in traffic if "heavy" in str(t.get("traffic_level", "")).lower()]
+            # 5. Event-based rules (from events_data collection)
+            high_impact_events = [e for e in events if e.get("impact_metrics", {}).get("phq_attendance", 0) > 10000]
+            festival_events = [e for e in events if e.get("category") == "festivals"]
+            sport_events = [e for e in events if e.get("category") in ["sports", "performing-arts"]]
             
             if len(high_impact_events) > 0:
                 generated_rules.append({
-                    "rule_id": "GEN_EVENT_SURGE",
-                    "name": "Major Event Surge Pricing",
-                    "description": f"Apply 1.7x surge during major events ({len(high_impact_events)} events detected)",
-                    "category": "demand_based",
-                    "condition": {"demand_profile": "HIGH"},
-                    "action": {"multiplier": 1.7},
-                    "estimated_impact": 40.0,
+                    "rule_id": "GEN_EVENT_HIGH_IMPACT",
+                    "name": "High Impact Event Surge",
+                    "description": f"Apply 1.8x surge during high-impact events (5000+ attendees, {len(high_impact_events)} events detected)",
+                    "category": "event_based",
+                    "condition": {"event_type": "high_impact", "demand_profile": "HIGH"},
+                    "action": {"multiplier": 1.8},
+                    "estimated_impact": 45.0,
                     "confidence": "high",
+                    "ride_count": len(high_impact_events) * 100,  # Estimated rides per event
+                    "source": "generated",
+                    "external_data": True
+                })
+            
+            if len(festival_events) > 0:
+                generated_rules.append({
+                    "rule_id": "GEN_EVENT_FESTIVAL",
+                    "name": "Festival Event Premium",
+                    "description": f"Apply 1.5x multiplier during festivals ({len(festival_events)} events detected)",
+                    "category": "event_based",
+                    "condition": {"event_type": "festival"},
+                    "action": {"multiplier": 1.5},
+                    "estimated_impact": 35.0,
+                    "confidence": "medium",
+                    "ride_count": len(festival_events) * 50,
+                    "source": "generated",
+                    "external_data": True
+                })
+            
+            if len(sport_events) > 0:
+                generated_rules.append({
+                    "rule_id": "GEN_EVENT_SPORTS",
+                    "name": "Sports/Entertainment Event Surge",
+                    "description": f"Apply 1.6x surge during sports and entertainment events ({len(sport_events)} events)",
+                    "category": "event_based",
+                    "condition": {"event_type": "sports"},
+                    "action": {"multiplier": 1.6},
+                    "estimated_impact": 38.0,
+                    "confidence": "high",
+                    "ride_count": len(sport_events) * 75,
+                    "source": "generated",
+                    "external_data": True
+                })
+            
+            # 6. News-based rules (from rideshare_news collection)
+            news_collection = db["rideshare_news"]
+            news_articles = list(news_collection.find({}).limit(20))
+            
+            # Analyze news for pricing signals
+            surge_keywords = ["surge", "price increase", "high demand", "busy", "shortage"]
+            discount_keywords = ["discount", "promotion", "deal", "price cut", "cheaper"]
+            competition_keywords = ["competitor", "lyft", "grab", "market share"]
+            
+            surge_news = [n for n in news_articles if any(kw in str(n.get("title", "")).lower() + str(n.get("description", "")).lower() for kw in surge_keywords)]
+            discount_news = [n for n in news_articles if any(kw in str(n.get("title", "")).lower() + str(n.get("description", "")).lower() for kw in discount_keywords)]
+            competition_news = [n for n in news_articles if any(kw in str(n.get("title", "")).lower() + str(n.get("description", "")).lower() for kw in competition_keywords)]
+            
+            if len(surge_news) > 0:
+                generated_rules.append({
+                    "rule_id": "GEN_NEWS_SURGE_TREND",
+                    "name": "Market Surge Trend Adjustment",
+                    "description": f"Increase pricing in response to market surge trends ({len(surge_news)} news articles)",
+                    "category": "news_based",
+                    "condition": {"market_trend": "surge"},
+                    "action": {"multiplier": 1.15},
+                    "estimated_impact": 25.0,
+                    "confidence": "medium",
                     "ride_count": 0,
+                    "source": "generated",
+                    "external_data": True
+                })
+            
+            if len(competition_news) > 0:
+                generated_rules.append({
+                    "rule_id": "GEN_NEWS_COMPETITION",
+                    "name": "Competitive Response Adjustment",
+                    "description": f"Adjust pricing based on competitive market intelligence ({len(competition_news)} articles)",
+                    "category": "news_based",
+                    "condition": {"market_factor": "competition"},
+                    "action": {"multiplier": 1.05},
+                    "estimated_impact": 20.0,
+                    "confidence": "medium",
+                    "ride_count": 0,
+                    "source": "generated",
+                    "external_data": True
+                })
+            
+            # 7. Traffic-based rules (if traffic_data exists)
+            heavy_traffic = [t for t in traffic if "heavy" in str(t.get("traffic_level", "")).lower()]
+            
+            if len(heavy_traffic) > 0:
+                generated_rules.append({
+                    "rule_id": "GEN_TRAFFIC_HEAVY",
+                    "name": "Heavy Traffic Premium",
+                    "description": f"Apply 1.25x multiplier during heavy traffic conditions ({len(heavy_traffic)} incidents)",
+                    "category": "surge_based",
+                    "condition": {"traffic_level": "heavy"},
+                    "action": {"multiplier": 1.25},
+                    "estimated_impact": 30.0,
+                    "confidence": "high",
+                    "ride_count": len(heavy_traffic) * 20,
                     "source": "generated",
                     "external_data": True
                 })
@@ -1978,13 +2070,20 @@ def generate_and_rank_pricing_rules() -> str:
         finally:
             client.close()
         
-        # Categorize for summary
+        # Categorize for summary (all 9 possible categories)
         by_category = {
             "location_based": [r for r in generated_rules if r["category"] == "location_based"],
             "loyalty_based": [r for r in generated_rules if r["category"] == "loyalty_based"],
             "demand_based": [r for r in generated_rules if r["category"] == "demand_based"],
-            "vehicle_based": [r for r in generated_rules if r["category"] == "vehicle_based"]
+            "vehicle_based": [r for r in generated_rules if r["category"] == "vehicle_based"],
+            "event_based": [r for r in generated_rules if r["category"] == "event_based"],
+            "news_based": [r for r in generated_rules if r["category"] == "news_based"],
+            "surge_based": [r for r in generated_rules if r["category"] == "surge_based"],
+            "time_based": [r for r in generated_rules if r["category"] == "time_based"],
+            "pricing_based": [r for r in generated_rules if r["category"] == "pricing_based"]
         }
+        # Filter out empty categories
+        by_category = {k: v for k, v in by_category.items() if len(v) > 0}
         
         result = {
             "summary": {
