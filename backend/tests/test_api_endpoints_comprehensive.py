@@ -68,8 +68,25 @@ class TestOrdersEndpoints:
         assert data["estimated_price"] > 0
     
     def test_create_order(self):
-        """Test POST /api/v1/orders/ creates order successfully - skip, needs valid segment data"""
-        pytest.skip("Create order test requires valid segment with forecast data from pipeline")
+        """Test POST /api/v1/orders/ creates order successfully"""
+        payload = {
+            "user_id": "test_user_001",
+            "pickup_location": {"address": "Downtown", "lat": 40.7128, "lng": -74.0060},
+            "dropoff_location": {"address": "Airport", "lat": 40.6413, "lng": -73.7781},
+            "location_category": "Urban",
+            "loyalty_tier": "Gold",
+            "vehicle_type": "Premium",
+            "pricing_model": "SURGE",
+            "duration": 25.0,
+            "priority": "P1"
+        }
+        response = requests.post(f"{BASE_URL}/api/v1/orders/", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert "order_id" in data
+        assert data["status"] == "pending"
+        assert "estimated_price" in data
+        return data["order_id"]  # Return for subsequent tests
     
     def test_get_orders(self):
         """Test GET /api/v1/orders/ returns order list"""
@@ -79,8 +96,16 @@ class TestOrdersEndpoints:
         assert isinstance(data, list)
     
     def test_get_specific_order(self):
-        """Test GET /api/v1/orders/{order_id} - skip due to create order dependency"""
-        pytest.skip("Get specific order test requires successful create order")
+        """Test GET /api/v1/orders/{order_id}"""
+        # First create an order
+        order_id = self.test_create_order()
+        
+        # Then fetch it
+        response = requests.get(f"{BASE_URL}/api/v1/orders/{order_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["order_id"] == order_id
+        assert "estimated_price" in data
     
     def test_get_priority_queue(self):
         """Test GET /api/v1/orders/queue/priority"""
@@ -145,9 +170,19 @@ class TestAnalyticsEndpoints:
     
     def test_what_if_analysis(self):
         """Test POST /api/v1/analytics/what-if-analysis"""
-        # What-if analysis needs specific scenario structure from pipeline
-        # Skip for now as it requires pipeline-generated recommendations
-        pytest.skip("What-if analysis requires pipeline-generated recommendation data")
+        payload = {
+            "recommendations_by_objective": {
+                "revenue": {
+                    "actions": ["Test action"],
+                    "expected_impact": "Test impact",
+                    "priority": "high"
+                }
+            }
+        }
+        response = requests.post(f"{BASE_URL}/api/v1/analytics/what-if-analysis", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert "success" in data or "baseline" in data or "projections" in data
 
 
 class TestReportsEndpoints:
@@ -254,8 +289,16 @@ class TestChatbotEndpoints:
         assert len(data["response"]) > 0
     
     def test_get_chat_history(self):
-        """Test GET /api/v1/chatbot/history - skip, needs prior messages"""
-        pytest.skip("Chat history test requires prior chat messages with specific thread_id")
+        """Test GET /api/v1/chatbot/history"""
+        # First send a message to create history
+        self.test_chat_message()
+        
+        # Then get history
+        response = requests.get(f"{BASE_URL}/api/v1/chatbot/history?thread_id=test_thread_001")
+        assert response.status_code == 200
+        data = response.json()
+        # Response can be list of messages or dict containing messages
+        assert isinstance(data, (list, dict))
 
 
 class TestAgentTestEndpoints:
@@ -263,9 +306,18 @@ class TestAgentTestEndpoints:
     
     def test_pricing_agent(self):
         """Test POST /api/v1/agents/test/pricing"""
-        # Pricing agent test needs specific payload structure
-        # Skip for now - orders/estimate provides same functionality
-        pytest.skip("Pricing agent test endpoint needs specific request structure")
+        payload = {
+            "location_category": "Urban",
+            "vehicle_type": "Premium",
+            "loyalty_tier": "Gold",
+            "duration": 30.0,
+            "pricing_model": "STANDARD",
+            "distance": 10.0
+        }
+        response = requests.post(f"{BASE_URL}/api/v1/agents/test/pricing", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert "price" in data or "result" in data or "estimated_price" in data
     
     def test_forecasting_agent(self):
         """Test POST /api/v1/agents/test/forecasting"""
@@ -278,9 +330,11 @@ class TestAgentTestEndpoints:
     
     def test_analysis_agent(self):
         """Test POST /api/v1/agents/test/analysis"""
-        # Analysis agent test needs specific payload
-        # Skip for now - pipeline analysis phase provides same functionality
-        pytest.skip("Analysis agent test endpoint needs specific request structure")
+        payload = {"query": "analyze pricing trends"}
+        response = requests.post(f"{BASE_URL}/api/v1/agents/test/analysis", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert "rules" in data or "result" in data or "analysis" in data
     
     def test_recommendation_agent(self):
         """Test POST /api/v1/agents/test/recommendation"""
@@ -292,7 +346,7 @@ class TestAgentTestEndpoints:
 
 
 class TestUsersEndpoints:
-    """Test user management endpoints - skip for now as users feature is not core"""
+    """Test user management endpoints"""
     
     def test_get_users(self):
         """Test GET /api/v1/users/"""
@@ -302,20 +356,42 @@ class TestUsersEndpoints:
         assert isinstance(data, list)
     
     def test_create_user(self):
-        """Test POST /api/v1/users/ - skipped, needs correct payload structure"""
-        pytest.skip("User CRUD endpoints need specific request structures - not core functionality")
+        """Test POST /api/v1/users/"""
+        payload = {
+            "username": f"testuser_{datetime.utcnow().timestamp()}",
+            "email": f"test_{datetime.utcnow().timestamp()}@example.com",
+            "loyalty_tier": "Silver"
+        }
+        response = requests.post(f"{BASE_URL}/api/v1/users/", json=payload)
+        assert response.status_code in [200, 201]
+        data = response.json()
+        assert "user_id" in data or "_id" in data or "id" in data
+        return data.get("user_id") or data.get("_id") or data.get("id")
     
     def test_get_specific_user(self):
-        """Test GET /api/v1/users/{user_id} - skipped"""
-        pytest.skip("User CRUD endpoints need specific request structures - not core functionality")
+        """Test GET /api/v1/users/{user_id}"""
+        user_id = self.test_create_user()
+        response = requests.get(f"{BASE_URL}/api/v1/users/{user_id}")
+        assert response.status_code == 200
+        data = response.json()
+        # Verify user_id matches
+        assert data.get("user_id") == user_id or str(data.get("_id")) == user_id or data.get("id") == user_id
     
     def test_update_user(self):
-        """Test PUT /api/v1/users/{user_id} - skipped"""
-        pytest.skip("User CRUD endpoints need specific request structures - not core functionality")
+        """Test PUT /api/v1/users/{user_id}"""
+        user_id = self.test_create_user()
+        payload = {"loyalty_tier": "Gold"}
+        response = requests.put(f"{BASE_URL}/api/v1/users/{user_id}", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        # Verify update was successful
+        assert "user_id" in data or "success" in data or data.get("loyalty_tier") == "Gold"
     
     def test_delete_user(self):
-        """Test DELETE /api/v1/users/{user_id} - skipped"""
-        pytest.skip("User CRUD endpoints need specific request structures - not core functionality")
+        """Test DELETE /api/v1/users/{user_id}"""
+        user_id = self.test_create_user()
+        response = requests.delete(f"{BASE_URL}/api/v1/users/{user_id}")
+        assert response.status_code in [200, 204]
 
 
 if __name__ == "__main__":
