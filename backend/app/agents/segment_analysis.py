@@ -382,22 +382,29 @@ def calculate_segment_estimate(
                 
             except Exception as e:
                 logger.warning(f"PricingEngine failed, using segment average: {e}")
-                estimated_price = historical["avg_price"]
-                explanation_parts.append(f"Using segment average price: ${estimated_price:.2f}")
+                # Calculate estimated price from NEW duration/unit_price model
+                unit_price = historical["segment_avg_fcs_unit_price"]
+                duration = historical["segment_avg_fcs_ride_duration"]
+                estimated_price = unit_price * duration if unit_price > 0 and duration > 0 else 15.0
+                explanation_parts.append(f"Using segment average: ${unit_price:.4f}/min × {duration:.1f} min = ${estimated_price:.2f}")
                 assumptions.append("PricingEngine unavailable, using historical average")
         
         # Case B: No trip details - use segment average
         else:
-            estimated_price = historical["avg_price"]
+            # Calculate from NEW duration/unit_price model
+            unit_price = historical["segment_avg_fcs_unit_price"]
+            duration = historical["segment_avg_fcs_ride_duration"]
+            estimated_price = unit_price * duration if unit_price > 0 and duration > 0 else 0.0
             
             if estimated_price > 0:
-                explanation_parts.append(f"Segment average price from {historical['sample_size']} historical rides: ${estimated_price:.2f}")
-                explanation_parts.append(f"Average trip: {historical['avg_distance']:.1f} miles, {historical['avg_duration']:.1f} minutes")
+                explanation_parts.append(f"Segment average from {historical['sample_size']} historical rides: ${unit_price:.4f}/min × {duration:.1f} min = ${estimated_price:.2f}")
             else:
                 # No historical data - use forecast or conservative estimate
-                if forecast["predicted_price_30d"] > 0:
-                    estimated_price = forecast["predicted_price_30d"]
-                    explanation_parts.append(f"Using forecasted price (no historical data): ${estimated_price:.2f}")
+                forecast_unit_price = forecast["predicted_unit_price_30d"]
+                forecast_duration = forecast["predicted_ride_duration_30d"]
+                if forecast_unit_price > 0 and forecast_duration > 0:
+                    estimated_price = forecast_unit_price * forecast_duration
+                    explanation_parts.append(f"Using forecasted price (no historical data): ${forecast_unit_price:.4f}/min × {forecast_duration:.1f} min = ${estimated_price:.2f}")
                     assumptions.append("Limited historical data, using forecast prediction")
                 else:
                     estimated_price = 15.0  # Conservative default
@@ -405,8 +412,11 @@ def calculate_segment_estimate(
                     assumptions.append("No historical or forecast data available")
         
         # Add forecast context
-        if forecast["predicted_price_30d"] > 0:
-            explanation_parts.append(f"30-day forecast: ${forecast['predicted_price_30d']:.2f} per ride, {forecast['predicted_demand_30d']:.0f} rides expected")
+        forecast_unit_price = forecast["predicted_unit_price_30d"]
+        forecast_duration = forecast["predicted_ride_duration_30d"]
+        if forecast_unit_price > 0 and forecast_duration > 0:
+            forecast_price = forecast_unit_price * forecast_duration
+            explanation_parts.append(f"30-day forecast: ${forecast_price:.2f} per ride ({forecast_unit_price:.4f}/min × {forecast_duration:.1f} min), {forecast['predicted_demand_30d']:.0f} rides expected")
         
         # Add segment context
         explanation_parts.append(f"Segment: {location_category} / {loyalty_tier} / {vehicle_type} / {pricing_model}")
