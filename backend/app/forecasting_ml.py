@@ -436,6 +436,36 @@ class RideshareForecastModel:
                 logger.info(f"  → Added Rideshare_Company regressors: {list(company_dummies.columns)}")
                 logger.info("    (Model will learn patterns from both HWCO and competitor data)")
             
+            # Add NUMERIC regressors (NEW for duration/price-based model)
+            # These are continuous values that Prophet will learn how to weight
+            logger.info("  → Adding numeric regressors for multi-dimensional forecasting:")
+            
+            # 1. Number_Of_Riders (demand forecast)
+            if 'Number_Of_Riders' in historical_data.columns:
+                prophet_data['num_riders'] = pd.to_numeric(historical_data['Number_Of_Riders'], errors='coerce')
+                logger.info("    • num_riders (demand forecast)")
+            
+            # 2. Number_of_Drivers (supply forecast)
+            if 'Number_of_Drivers' in historical_data.columns:
+                prophet_data['num_drivers'] = pd.to_numeric(historical_data['Number_of_Drivers'], errors='coerce')
+                logger.info("    • num_drivers (supply forecast)")
+            
+            # 3. Expected_Ride_Duration (duration forecast)
+            if 'Expected_Ride_Duration' in historical_data.columns:
+                prophet_data['ride_duration'] = pd.to_numeric(historical_data['Expected_Ride_Duration'], errors='coerce')
+                logger.info("    • ride_duration (minutes forecast)")
+            
+            # 4. Historical_Unit_Price (unit price forecast) - calculated from price/duration
+            if 'Historical_Unit_Price' in historical_data.columns:
+                prophet_data['unit_price'] = pd.to_numeric(historical_data['Historical_Unit_Price'], errors='coerce')
+                logger.info("    • unit_price (price per minute forecast)")
+            elif 'Historical_Cost_of_Ride' in historical_data.columns and 'Expected_Ride_Duration' in historical_data.columns:
+                # Calculate unit_price if not present
+                duration = pd.to_numeric(historical_data['Expected_Ride_Duration'], errors='coerce')
+                price = pd.to_numeric(historical_data['Historical_Cost_of_Ride'], errors='coerce')
+                prophet_data['unit_price'] = (price / duration).replace([float('inf'), -float('inf')], None)
+                logger.info("    • unit_price (calculated from price/duration)")
+            
             # Remove any rows with NaN values in required columns
             prophet_data = prophet_data.dropna(subset=['ds', 'y'])
             
@@ -468,10 +498,13 @@ class RideshareForecastModel:
             # Step 4a: Add all regressors to Prophet model
             # Regressors are extra variables that affect the forecast
             # Prophet will learn how each regressor affects demand
-            # We add ALL regressor columns (pricing_, time_, demand_, location_, loyalty_, vehicle_, company_)
+            # We add ALL regressor columns:
+            # - Categorical (one-hot encoded): pricing_, time_, demand_, location_, loyalty_, vehicle_, company_
+            # - Numeric: num_riders, num_drivers, ride_duration, unit_price
             regressor_cols = [
                 col for col in prophet_data.columns 
                 if col.startswith(('pricing_', 'time_', 'demand_', 'location_', 'loyalty_', 'vehicle_', 'company_'))
+                or col in ['num_riders', 'num_drivers', 'ride_duration', 'unit_price']
             ]
             
             for regressor_col in regressor_cols:
