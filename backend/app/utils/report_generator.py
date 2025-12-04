@@ -104,11 +104,13 @@ def generate_segment_dynamic_pricing_report(pipeline_result_id: str = None) -> D
             hwco_rides = list(historical_collection.find(hwco_query).limit(1000))
             
             if hwco_rides:
-                hwco_avg_price = sum(r.get("Historical_Cost_of_Ride", 0) for r in hwco_rides) / len(hwco_rides)
-                hwco_avg_distance = sum(r.get("Historical_Ride_Distance", 0) for r in hwco_rides) / len(hwco_rides)
+                # Calculate using NEW data model: duration and unit_price
+                hwco_avg_duration = sum(r.get("Expected_Ride_Duration", 0) for r in hwco_rides) / len(hwco_rides)
+                hwco_avg_unit_price = sum(r.get("Historical_Unit_Price", 0) for r in hwco_rides) / len(hwco_rides)
                 hwco_ride_count = len(hwco_rides)
-                hwco_revenue = hwco_avg_price * hwco_ride_count
-                hwco_explanation = f"HWCO historical average: {hwco_ride_count} rides, ${hwco_avg_price:.2f}/ride, ${hwco_revenue:.2f} revenue"
+                # Revenue = rides × duration × unit_price
+                hwco_revenue = hwco_ride_count * hwco_avg_duration * hwco_avg_unit_price
+                hwco_explanation = f"HWCO historical average: {hwco_ride_count} rides, ${hwco_avg_unit_price:.2f}/min, {hwco_avg_duration:.1f} min avg, ${hwco_revenue:.2f} revenue"
             else:
                 hwco_avg_price = 0
                 hwco_ride_count = 0
@@ -120,13 +122,13 @@ def generate_segment_dynamic_pricing_report(pipeline_result_id: str = None) -> D
             lyft_rides = list(competitor_collection.find(lyft_query).limit(1000))
             
             if lyft_rides:
-                lyft_avg_price = sum(
-                    r.get("Historical_Cost_of_Ride", 0) or r.get("price", 0) 
-                    for r in lyft_rides
-                ) / len(lyft_rides)
+                # Calculate using NEW data model: duration and unit_price
+                lyft_avg_duration = sum(r.get("Expected_Ride_Duration", 0) for r in lyft_rides) / len(lyft_rides)
+                lyft_avg_unit_price = sum(r.get("unit_price", 0) for r in lyft_rides) / len(lyft_rides)
                 lyft_ride_count = len(lyft_rides)
-                lyft_revenue = lyft_avg_price * lyft_ride_count
-                lyft_explanation = f"Lyft competitor average: {lyft_ride_count} rides, ${lyft_avg_price:.2f}/ride, ${lyft_revenue:.2f} revenue"
+                # Revenue = rides × duration × unit_price
+                lyft_revenue = lyft_ride_count * lyft_avg_duration * lyft_avg_unit_price
+                lyft_explanation = f"Lyft competitor average: {lyft_ride_count} rides, ${lyft_avg_unit_price:.2f}/min, {lyft_avg_duration:.1f} min avg, ${lyft_revenue:.2f} revenue"
             else:
                 lyft_avg_price = 0
                 lyft_ride_count = 0
@@ -138,13 +140,13 @@ def generate_segment_dynamic_pricing_report(pipeline_result_id: str = None) -> D
                 "segment": segment_dims,
                 "hwco_continue_current": {
                     "rides_30d": hwco_ride_count,
-                    "unit_price": round(hwco_avg_price, 2),
+                    "unit_price": round(hwco_avg_unit_price, 2),
                     "revenue_30d": round(hwco_revenue, 2),
                     "explanation": hwco_explanation
                 },
                 "lyft_continue_current": {
                     "rides_30d": lyft_ride_count,
-                    "unit_price": round(lyft_avg_price, 2),
+                    "unit_price": round(lyft_avg_unit_price, 2),
                     "revenue_30d": round(lyft_revenue, 2),
                     "explanation": lyft_explanation
                 },
