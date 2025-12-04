@@ -802,6 +802,8 @@ class AgentPipeline:
                     rules_obj = json.loads(rules_json)
                     rules_list = rules_obj.get("top_rules", []) or rules_obj.get("rules", [])
                     logger.info(f"      - Passing {len(rules_list)} rules to Recommendation Agent")
+                except Exception as e:
+                    logger.warning(f"      - Could not parse rules JSON: {e}")
             
             # Generate strategic recommendations (combined tool)
             logger.info("      - Simulating rules and generating top 3 recommendations...")
