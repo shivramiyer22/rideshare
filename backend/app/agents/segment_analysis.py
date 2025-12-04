@@ -206,8 +206,12 @@ def get_segment_forecast_data(
         if not database:
             logger.warning("Database not available for forecast data")
             return {
-                "predicted_price_30d": 0.0,
+                "predicted_unit_price_30d": 0.0,
+                "predicted_ride_duration_30d": 0.0,
                 "predicted_demand_30d": 0.0,
+                "predicted_riders_30d": 0.0,
+                "predicted_drivers_30d": 0.0,
+                "segment_demand_profile": "MEDIUM",
                 "forecast_confidence": None
             }
         
@@ -222,8 +226,12 @@ def get_segment_forecast_data(
         if not pipeline_result or "forecasts" not in pipeline_result:
             logger.info("No forecast data available, using conservative estimates")
             return {
-                "predicted_price_30d": 0.0,
+                "predicted_unit_price_30d": 0.0,
+                "predicted_ride_duration_30d": 0.0,
                 "predicted_demand_30d": 0.0,
+                "predicted_riders_30d": 0.0,
+                "predicted_drivers_30d": 0.0,
+                "segment_demand_profile": "MEDIUM",
                 "forecast_confidence": None
             }
         
@@ -239,29 +247,42 @@ def get_segment_forecast_data(
                 dims.get("vehicle_type", "").lower() == vehicle_type.lower() and
                 dims.get("pricing_model", "").lower() == pricing_model.lower()):
                 
-                # Extract 30-day forecast
+                # Extract 30-day forecast with NEW field names
                 forecast_30d = segment.get("forecast_30d", {})
                 baseline = segment.get("baseline_metrics", {})
+                dims_segment = segment.get("dimensions", {})
                 
                 return {
-                    "predicted_price_30d": round(baseline.get("pricing_engine_price", baseline.get("avg_price", 0.0)), 2),
+                    "predicted_unit_price_30d": round(forecast_30d.get("predicted_unit_price", baseline.get("segment_avg_fcs_unit_price", 0.0)), 4),
+                    "predicted_ride_duration_30d": round(forecast_30d.get("predicted_duration", baseline.get("segment_avg_fcs_ride_duration", 0.0)), 2),
                     "predicted_demand_30d": round(forecast_30d.get("predicted_rides", 0.0), 2),
+                    "predicted_riders_30d": round(baseline.get("segment_avg_riders_per_order", 1.0), 2),
+                    "predicted_drivers_30d": round(baseline.get("segment_avg_drivers_per_order", 0.5), 2),
+                    "segment_demand_profile": dims_segment.get("demand_profile", "MEDIUM"),
                     "forecast_confidence": 0.8  # Default confidence
                 }
         
         # No matching segment found
         logger.info(f"No forecast found for segment: {location_category}/{loyalty_tier}/{vehicle_type}/{pricing_model}")
         return {
-            "predicted_price_30d": 0.0,
+            "predicted_unit_price_30d": 0.0,
+            "predicted_ride_duration_30d": 0.0,
             "predicted_demand_30d": 0.0,
+            "predicted_riders_30d": 0.0,
+            "predicted_drivers_30d": 0.0,
+            "segment_demand_profile": "MEDIUM",
             "forecast_confidence": None
         }
     
     except Exception as e:
         logger.error(f"Error getting segment forecast data: {e}")
         return {
-            "predicted_price_30d": 0.0,
+            "predicted_unit_price_30d": 0.0,
+            "predicted_ride_duration_30d": 0.0,
             "predicted_demand_30d": 0.0,
+            "predicted_riders_30d": 0.0,
+            "predicted_drivers_30d": 0.0,
+            "segment_demand_profile": "MEDIUM",
             "forecast_confidence": None,
             "error": str(e)
         }
@@ -430,8 +451,12 @@ def calculate_segment_estimate(
                 "data_source": "fallback"
             },
             "forecast_prediction": {
-                "predicted_price_30d": 15.0,
+                "predicted_unit_price_30d": 1.0,
+                "predicted_ride_duration_30d": 15.0,
                 "predicted_demand_30d": 0.0,
+                "predicted_riders_30d": 1.0,
+                "predicted_drivers_30d": 0.5,
+                "segment_demand_profile": "MEDIUM",
                 "forecast_confidence": None
             },
             "estimated_price": 15.0,
