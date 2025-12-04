@@ -1548,6 +1548,193 @@ def _generate_external_data_explanation(
 
 
 @tool
+def get_competitor_segment_baseline(
+    location_category: str = None,
+    loyalty_tier: str = None,
+    vehicle_type: str = None,
+    demand_profile: str = None,
+    pricing_model: str = "STANDARD"
+) -> str:
+    """
+    Query Lyft competitor pricing for a specific segment to establish Continue Current baseline.
+    
+    This tool retrieves competitor (Lyft) pricing data for a given segment's dimensions
+    to establish what the "Continue Current" strategy baseline should be for comparison
+    with HWCO's forecasted pricing and recommendations.
+    
+    Args:
+        location_category: Urban, Suburban, or Rural (optional, returns all if None)
+        loyalty_tier: Gold, Silver, or Regular (optional, returns all if None)
+        vehicle_type: Economy, Premium, etc. (optional, returns all if None)
+        demand_profile: HIGH, MEDIUM, or LOW (optional, returns all if None)
+        pricing_model: STANDARD, SUBSCRIPTION, etc. (default: STANDARD)
+    
+    Returns:
+        str: JSON with competitor baseline data for the segment(s)
+    """
+    try:
+        client = get_sync_mongodb_client()
+        db = client[settings.mongodb_db_name]
+        competitor_collection = db["competitor_prices"]
+        
+        # Build query filter
+        query_filter = {}
+        if location_category:
+            query_filter["Location_Category"] = location_category
+        if loyalty_tier:
+            query_filter["Customer_Loyalty_Status"] = loyalty_tier
+        if vehicle_type:
+            query_filter["Vehicle_Type"] = vehicle_type
+        if demand_profile:
+            query_filter["Demand_Profile"] = demand_profile
+        if pricing_model:
+            query_filter["Pricing_Model"] = pricing_model
+        
+        # Query competitor data
+        competitor_data = list(competitor_collection.find(query_filter).limit(1000))
+        
+        if not competitor_data:
+            return json.dumps({
+                "segment": {
+                    "location_category": location_category or "ALL",
+                    "loyalty_tier": loyalty_tier or "ALL",
+                    "vehicle_type": vehicle_type or "ALL",
+                    "demand_profile": demand_profile or "ALL",
+                    "pricing_model": pricing_model
+                },
+                "competitor": "Lyft",
+                "baseline": {
+                    "avg_price": 0,
+                    "avg_distance": 0,
+                    "ride_count": 0
+                },
+                "message": "No competitor data found for this segment"
+            })
+        
+        # Calculate statistics
+        total_price = sum(r.get("Historical_Cost_of_Ride", 0) or r.get("price", 0) for r in competitor_data)
+        total_distance = sum(r.get("Historical_Ride_Distance", 0) or r.get("distance", 0) for r in competitor_data)
+        ride_count = len(competitor_data)
+        
+        avg_price = total_price / ride_count if ride_count > 0 else 0
+        avg_distance = total_distance / ride_count if ride_count > 0 else 0
+        
+        # Calculate price per mile
+        price_per_mile = avg_price / avg_distance if avg_distance > 0 else 0
+        
+        result = {
+            "segment": {
+                "location_category": location_category or "ALL",
+                "loyalty_tier": loyalty_tier or "ALL",
+                "vehicle_type": vehicle_type or "ALL",
+                "demand_profile": demand_profile or "ALL",
+                "pricing_model": pricing_model
+            },
+            "competitor": "Lyft",
+            "baseline": {
+                "avg_price": round(avg_price, 2),
+                "avg_distance": round(avg_distance, 2),
+                "price_per_mile": round(price_per_mile, 2),
+                "ride_count": ride_count
+            },
+            "explanation": f"Lyft averages ${avg_price:.2f} per ride ({avg_distance:.2f} miles, ${price_per_mile:.2f}/mile) across {ride_count} rides in this segment"
+        }
+        
+        client.close()
+        return json.dumps(result)
+        
+    except Exception as e:
+        logger.error(f"Error getting competitor segment baseline: {e}")
+        return json.dumps({"error": f"Error querying competitor data: {str(e)}"})
+
+
+@tool
+def query_segment_dynamic_pricing_report(
+    location_category: str = None,
+    loyalty_tier: str = None,
+    vehicle_type: str = None,
+    demand_profile: str = None,
+    pricing_model: str = None
+) -> str:
+    """
+    Query the segment dynamic pricing report for specific segments or all segments.
+    
+    This report contains:
+    - HWCO Continue Current: Historical baseline (rides, unit_price, revenue)
+    - Lyft Continue Current: Competitor baseline (rides, unit_price, revenue)
+    - Recommendation 1, 2, 3: Forecasted metrics with pricing rules applied
+    
+    Use this tool when users ask about:
+    - "Show me segment pricing report"
+    - "What are the forecasted prices for [segment]?"
+    - "Compare HWCO vs Lyft pricing for [segment]"
+    - "Show recommendation pricing for [segment]"
+    
+    Args:
+        location_category: Filter by location (Urban, Suburban, Rural) - optional
+        loyalty_tier: Filter by loyalty (Gold, Silver, Regular) - optional
+        vehicle_type: Filter by vehicle type (Economy, Premium) - optional
+        demand_profile: Filter by demand (HIGH, MEDIUM, LOW) - optional
+        pricing_model: Filter by pricing model (STANDARD, SUBSCRIPTION) - optional
+    
+    Returns:
+        str: JSON with matching segment report data
+    """
+    try:
+        from app.utils.report_generator import generate_segment_dynamic_pricing_report
+        
+        # Generate the full report
+        report = generate_segment_dynamic_pricing_report()
+        
+        if "error" in report:
+            return json.dumps({"error": report.get("error"), "segments": []})
+        
+        segments = report.get("segments", [])
+        
+        # Filter segments if parameters provided
+        if any([location_category, loyalty_tier, vehicle_type, demand_profile, pricing_model]):
+            filtered_segments = []
+            for seg in segments:
+                seg_dims = seg.get("segment", {})
+                
+                # Check all filter criteria
+                if location_category and seg_dims.get("location_category") != location_category:
+                    continue
+                if loyalty_tier and seg_dims.get("loyalty_tier") != loyalty_tier:
+                    continue
+                if vehicle_type and seg_dims.get("vehicle_type") != vehicle_type:
+                    continue
+                if demand_profile and seg_dims.get("demand_profile") != demand_profile:
+                    continue
+                if pricing_model and seg_dims.get("pricing_model") != pricing_model:
+                    continue
+                
+                filtered_segments.append(seg)
+            
+            segments = filtered_segments
+        
+        # Return filtered results with summary
+        result = {
+            "metadata": report.get("metadata", {}),
+            "filter_applied": {
+                "location_category": location_category or "ALL",
+                "loyalty_tier": loyalty_tier or "ALL",
+                "vehicle_type": vehicle_type or "ALL",
+                "demand_profile": demand_profile or "ALL",
+                "pricing_model": pricing_model or "ALL"
+            },
+            "segments_returned": len(segments),
+            "segments": segments
+        }
+        
+        return json.dumps(result)
+        
+    except Exception as e:
+        logger.error(f"Error querying segment dynamic pricing report: {e}")
+        return json.dumps({"error": f"Error querying report: {str(e)}", "segments": []})
+
+
+@tool
 def generate_and_rank_pricing_rules() -> str:
     """
     Generate pricing rules from current data patterns only and rank by impact.
@@ -1596,7 +1783,7 @@ def generate_and_rank_pricing_rules() -> str:
                 hwco_loc = [r for r in hwco_data if r.get("Location_Category") == location]
                 comp_loc = [r for r in competitor_data if r.get("Location_Category") == location]
                 
-                if len(hwco_loc) >= 10:
+                if len(hwco_loc) >= 5:  # Lowered from 10 for better coverage
                     hwco_avg = sum(r.get("Historical_Cost_of_Ride", 0) for r in hwco_loc) / len(hwco_loc)
                     comp_avg = sum(r.get("Historical_Cost_of_Ride", 0) or r.get("price", 0) for r in comp_loc) / len(comp_loc) if comp_loc else hwco_avg
                     
@@ -1631,7 +1818,7 @@ def generate_and_rank_pricing_rules() -> str:
                 loyalty_stats[loyalty]["rides"].append(ride)
             
             for loyalty, stats in loyalty_stats.items():
-                if stats["count"] >= 25:
+                if stats["count"] >= 10:  # Lowered from 25 for better coverage
                     avg_price = stats["total_price"] / stats["count"]
                     
                     # Gold tier: Cap surge at 1.25x for retention
@@ -1664,17 +1851,41 @@ def generate_and_rank_pricing_rules() -> str:
                             "source": "generated"
                         })
             
-            # 3. Demand-based rules
+            # 3. Demand-based rules (calculate demand_profile dynamically)
             demand_stats = {}
+            
+            # Helper function to calculate demand_profile
+            def calc_demand_profile(riders, drivers):
+                if riders == 0 or riders is None:
+                    return "MEDIUM"
+                driver_ratio = (drivers / riders) * 100
+                if driver_ratio < 34:
+                    return "HIGH"
+                elif driver_ratio < 67:
+                    return "MEDIUM"
+                else:
+                    return "LOW"
+            
             for ride in hwco_data:
-                demand = ride.get("Demand_Profile", "Unknown")
+                # Calculate demand_profile from Number_Of_Riders and Number_of_Drivers
+                riders = ride.get("Number_Of_Riders", 0)
+                drivers = ride.get("Number_of_Drivers", 0)
+                demand = calc_demand_profile(riders, drivers)
+                
+                # Also calculate unit_price for this ride
+                duration = ride.get("Expected_Ride_Duration", 0)
+                price = ride.get("Historical_Cost_of_Ride", 0)
+                unit_price = (price / duration) if duration > 0 else 0
+                
                 if demand not in demand_stats:
-                    demand_stats[demand] = {"count": 0, "total_price": 0}
+                    demand_stats[demand] = {"count": 0, "total_price": 0, "total_unit_price": 0, "total_duration": 0}
                 demand_stats[demand]["count"] += 1
-                demand_stats[demand]["total_price"] += ride.get("Historical_Cost_of_Ride", 0)
+                demand_stats[demand]["total_price"] += price
+                demand_stats[demand]["total_unit_price"] += unit_price
+                demand_stats[demand]["total_duration"] += duration
             
             for demand, stats in demand_stats.items():
-                if stats["count"] >= 20:
+                if stats["count"] >= 10:  # Lowered from 20 for better coverage
                     if demand == "HIGH":
                         # High demand surge
                         generated_rules.append({
@@ -1714,7 +1925,7 @@ def generate_and_rank_pricing_rules() -> str:
                 vehicle_stats[vehicle]["total_price"] += ride.get("Historical_Cost_of_Ride", 0)
             
             for vehicle, stats in vehicle_stats.items():
-                if stats["count"] >= 20 and vehicle == "Premium":
+                if stats["count"] >= 10 and vehicle == "Premium":  # Lowered from 20
                     avg_price = stats["total_price"] / stats["count"]
                     # Premium vehicle premium pricing
                     generated_rules.append({
@@ -1730,21 +1941,113 @@ def generate_and_rank_pricing_rules() -> str:
                         "source": "generated"
                     })
             
-            # 5. Incorporate external data insights
-            high_impact_events = [e for e in events if e.get("expected_attendees", 0) > 5000]
-            heavy_traffic = [t for t in traffic if "heavy" in str(t.get("traffic_level", "")).lower()]
+            # 5. Event-based rules (from events_data collection)
+            high_impact_events = [e for e in events if e.get("impact_metrics", {}).get("phq_attendance", 0) > 10000]
+            festival_events = [e for e in events if e.get("category") == "festivals"]
+            sport_events = [e for e in events if e.get("category") in ["sports", "performing-arts"]]
             
             if len(high_impact_events) > 0:
                 generated_rules.append({
-                    "rule_id": "GEN_EVENT_SURGE",
-                    "name": "Major Event Surge Pricing",
-                    "description": f"Apply 1.7x surge during major events ({len(high_impact_events)} events detected)",
-                    "category": "demand_based",
-                    "condition": {"demand_profile": "HIGH"},
-                    "action": {"multiplier": 1.7},
-                    "estimated_impact": 40.0,
+                    "rule_id": "GEN_EVENT_HIGH_IMPACT",
+                    "name": "High Impact Event Surge",
+                    "description": f"Apply 1.8x surge during high-impact events (5000+ attendees, {len(high_impact_events)} events detected)",
+                    "category": "event_based",
+                    "condition": {"event_type": "high_impact", "demand_profile": "HIGH"},
+                    "action": {"multiplier": 1.8},
+                    "estimated_impact": 45.0,
                     "confidence": "high",
+                    "ride_count": len(high_impact_events) * 100,  # Estimated rides per event
+                    "source": "generated",
+                    "external_data": True
+                })
+            
+            if len(festival_events) > 0:
+                generated_rules.append({
+                    "rule_id": "GEN_EVENT_FESTIVAL",
+                    "name": "Festival Event Premium",
+                    "description": f"Apply 1.5x multiplier during festivals ({len(festival_events)} events detected)",
+                    "category": "event_based",
+                    "condition": {"event_type": "festival"},
+                    "action": {"multiplier": 1.5},
+                    "estimated_impact": 35.0,
+                    "confidence": "medium",
+                    "ride_count": len(festival_events) * 50,
+                    "source": "generated",
+                    "external_data": True
+                })
+            
+            if len(sport_events) > 0:
+                generated_rules.append({
+                    "rule_id": "GEN_EVENT_SPORTS",
+                    "name": "Sports/Entertainment Event Surge",
+                    "description": f"Apply 1.6x surge during sports and entertainment events ({len(sport_events)} events)",
+                    "category": "event_based",
+                    "condition": {"event_type": "sports"},
+                    "action": {"multiplier": 1.6},
+                    "estimated_impact": 38.0,
+                    "confidence": "high",
+                    "ride_count": len(sport_events) * 75,
+                    "source": "generated",
+                    "external_data": True
+                })
+            
+            # 6. News-based rules (from rideshare_news collection)
+            news_collection = db["rideshare_news"]
+            news_articles = list(news_collection.find({}).limit(20))
+            
+            # Analyze news for pricing signals
+            surge_keywords = ["surge", "price increase", "high demand", "busy", "shortage"]
+            discount_keywords = ["discount", "promotion", "deal", "price cut", "cheaper"]
+            competition_keywords = ["competitor", "lyft", "grab", "market share"]
+            
+            surge_news = [n for n in news_articles if any(kw in str(n.get("title", "")).lower() + str(n.get("description", "")).lower() for kw in surge_keywords)]
+            discount_news = [n for n in news_articles if any(kw in str(n.get("title", "")).lower() + str(n.get("description", "")).lower() for kw in discount_keywords)]
+            competition_news = [n for n in news_articles if any(kw in str(n.get("title", "")).lower() + str(n.get("description", "")).lower() for kw in competition_keywords)]
+            
+            if len(surge_news) > 0:
+                generated_rules.append({
+                    "rule_id": "GEN_NEWS_SURGE_TREND",
+                    "name": "Market Surge Trend Adjustment",
+                    "description": f"Increase pricing in response to market surge trends ({len(surge_news)} news articles)",
+                    "category": "news_based",
+                    "condition": {"market_trend": "surge"},
+                    "action": {"multiplier": 1.15},
+                    "estimated_impact": 25.0,
+                    "confidence": "medium",
                     "ride_count": 0,
+                    "source": "generated",
+                    "external_data": True
+                })
+            
+            if len(competition_news) > 0:
+                generated_rules.append({
+                    "rule_id": "GEN_NEWS_COMPETITION",
+                    "name": "Competitive Response Adjustment",
+                    "description": f"Adjust pricing based on competitive market intelligence ({len(competition_news)} articles)",
+                    "category": "news_based",
+                    "condition": {"market_factor": "competition"},
+                    "action": {"multiplier": 1.05},
+                    "estimated_impact": 20.0,
+                    "confidence": "medium",
+                    "ride_count": 0,
+                    "source": "generated",
+                    "external_data": True
+                })
+            
+            # 7. Traffic-based rules (if traffic_data exists)
+            heavy_traffic = [t for t in traffic if "heavy" in str(t.get("traffic_level", "")).lower()]
+            
+            if len(heavy_traffic) > 0:
+                generated_rules.append({
+                    "rule_id": "GEN_TRAFFIC_HEAVY",
+                    "name": "Heavy Traffic Premium",
+                    "description": f"Apply 1.25x multiplier during heavy traffic conditions ({len(heavy_traffic)} incidents)",
+                    "category": "surge_based",
+                    "condition": {"traffic_level": "heavy"},
+                    "action": {"multiplier": 1.25},
+                    "estimated_impact": 30.0,
+                    "confidence": "high",
+                    "ride_count": len(heavy_traffic) * 20,
                     "source": "generated",
                     "external_data": True
                 })
@@ -1767,13 +2070,20 @@ def generate_and_rank_pricing_rules() -> str:
         finally:
             client.close()
         
-        # Categorize for summary
+        # Categorize for summary (all 9 possible categories)
         by_category = {
             "location_based": [r for r in generated_rules if r["category"] == "location_based"],
             "loyalty_based": [r for r in generated_rules if r["category"] == "loyalty_based"],
             "demand_based": [r for r in generated_rules if r["category"] == "demand_based"],
-            "vehicle_based": [r for r in generated_rules if r["category"] == "vehicle_based"]
+            "vehicle_based": [r for r in generated_rules if r["category"] == "vehicle_based"],
+            "event_based": [r for r in generated_rules if r["category"] == "event_based"],
+            "news_based": [r for r in generated_rules if r["category"] == "news_based"],
+            "surge_based": [r for r in generated_rules if r["category"] == "surge_based"],
+            "time_based": [r for r in generated_rules if r["category"] == "time_based"],
+            "pricing_based": [r for r in generated_rules if r["category"] == "pricing_based"]
         }
+        # Filter out empty categories
+        by_category = {k: v for k, v in by_category.items() if len(v) > 0}
         
         result = {
             "summary": {
@@ -2331,7 +2641,11 @@ try:
             # Structured insights generation
             generate_structured_insights,
             # Pricing rules generation (NEW - simplified, replaces get_combined_pricing_rules)
-            generate_and_rank_pricing_rules
+            generate_and_rank_pricing_rules,
+            # Competitor segment baseline (for Continue Current comparison)
+            get_competitor_segment_baseline,
+            # Segment dynamic pricing report (for frontend dashboard & chatbot queries)
+            query_segment_dynamic_pricing_report
         ],
         system_prompt=(
             "You are a data analysis specialist for a rideshare company. "

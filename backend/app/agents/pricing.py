@@ -399,6 +399,82 @@ def calculate_price_with_explanation(order_data: Dict[str, Any]) -> Dict[str, An
         }
 
 
+@tool
+def estimate_ride_price(
+    location_category: str,
+    loyalty_tier: str,
+    vehicle_type: str,
+    pricing_model: str = "STANDARD",
+    distance: float = None,
+    duration: float = None
+) -> str:
+    """
+    Estimate ride price for given segment and optional trip details.
+    
+    Use this tool when user asks about price estimation without creating an order.
+    This is perfect for "what would this ride cost?" or "price preview" queries.
+    
+    Provides comprehensive estimate combining:
+    - Historical baseline (average price/distance from past similar rides)
+    - Forecast prediction (expected price trends for next 30 days)
+    - Estimated price (segment average OR PricingEngine calculation if trip details provided)
+    
+    Args:
+        location_category: "Urban", "Suburban", or "Rural"
+        loyalty_tier: "Gold", "Silver", or "Regular"
+        vehicle_type: "Premium" or "Economy"
+        pricing_model: "CONTRACTED", "STANDARD", or "CUSTOM" (default: "STANDARD")
+        distance: Optional trip distance in miles (if known)
+        duration: Optional trip duration in minutes (if known)
+    
+    Returns:
+        str: JSON string with comprehensive estimate including:
+             - segment dimensions
+             - historical_baseline (avg_price, avg_distance, avg_duration, sample_size)
+             - forecast_prediction (predicted_price_30d, predicted_demand_30d)
+             - estimated_price (recommended estimate)
+             - price_breakdown (if distance/duration provided)
+             - explanation (natural language description)
+             - assumptions (list of assumptions made)
+    
+    Example:
+        User: "What would a Premium ride in Urban area cost for a Gold member?"
+        Response: Returns estimate with historical avg, forecast, and explanation
+    """
+    try:
+        from app.agents.segment_analysis import calculate_segment_estimate
+        
+        # Build segment dimensions
+        segment_dimensions = {
+            "location_category": location_category,
+            "loyalty_tier": loyalty_tier,
+            "vehicle_type": vehicle_type,
+            "pricing_model": pricing_model
+        }
+        
+        # Build trip details if provided
+        trip_details = None
+        if distance is not None and duration is not None:
+            trip_details = {
+                "distance": distance,
+                "duration": duration
+            }
+        
+        # Calculate estimate
+        estimate = calculate_segment_estimate(segment_dimensions, trip_details)
+        
+        # Return as formatted JSON
+        return json.dumps(estimate, indent=2)
+    
+    except Exception as e:
+        return json.dumps({
+            "error": str(e),
+            "segment": segment_dimensions if 'segment_dimensions' in locals() else {},
+            "estimated_price": 0.0,
+            "explanation": f"Error calculating estimate: {str(e)}"
+        })
+
+
 # Create the pricing agent
 # Handle missing API key gracefully (for testing environments)
 try:
@@ -411,8 +487,9 @@ try:
             # ChromaDB RAG tools (for similar scenarios)
             query_similar_pricing_scenarios,
             query_pricing_strategies,
-            # Calculation tool
-            calculate_price_with_explanation
+            # Calculation tools
+            calculate_price_with_explanation,
+            estimate_ride_price  # NEW: Price estimation tool
         ],
         system_prompt=(
             "You are a pricing specialist. "
@@ -425,18 +502,27 @@ try:
             "- For similar past scenarios (RAG search): use query_similar_pricing_scenarios "
             "- For pricing strategies/rules: use query_pricing_strategies "
             "- For price calculations: use calculate_price_with_explanation "
+            "- For price ESTIMATES (segment-based): use estimate_ride_price "
+            "\n\n"
+            "NEW: Price Estimation Capability: "
+            "- Use estimate_ride_price when user asks 'what would this cost?' or 'price preview' "
+            "- Requires: location_category, loyalty_tier, vehicle_type, pricing_model "
+            "- Optional: distance and duration for exact calculation "
+            "- Returns comprehensive estimate with historical baseline and forecast "
             "\n\n"
             "Key responsibilities: "
             "- Calculate prices using PricingEngine for accurate results "
+            "- Provide price estimates for segments without creating orders "
             "- Explain price breakdowns in natural language using OpenAI GPT-4 "
             "- Reference actual historical and competitor data to justify pricing decisions "
             "- Use business rules and strategies to guide recommendations "
             "\n\n"
             "When answering pricing questions: "
-            "1. Use get_historical_pricing_data for questions about past prices (monthly averages, etc.) "
-            "2. Use get_competitor_pricing_data to compare with competitor pricing "
-            "3. Use calculate_price_with_explanation for new price calculations "
-            "4. Always provide specific numbers from actual data "
+            "1. Use estimate_ride_price for 'what would this cost?' queries (price preview) "
+            "2. Use get_historical_pricing_data for questions about past prices (monthly averages, etc.) "
+            "3. Use get_competitor_pricing_data to compare with competitor pricing "
+            "4. Use calculate_price_with_explanation for exact price calculations with trip details "
+            "5. Always provide specific numbers from actual data "
             "\n\n"
             "Always provide clear, data-driven explanations with real numbers from the database."
         ),

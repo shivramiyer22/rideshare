@@ -761,13 +761,109 @@ def generate_strategic_recommendations(forecasts: str, rules: str) -> str:
                 "explanation": f"Implement {combo['rule_count']} pricing rules to achieve {combo['objectives_achieved']}/4 business objectives with {combo['revenue_impact_pct']:.1f}% revenue impact."
             })
         
+        # Step 4: Generate per-segment impacts for each recommendation
+        per_segment_impacts = {
+            "recommendation_1": [],
+            "recommendation_2": [],
+            "recommendation_3": []
+        }
+        
+        # Only calculate per-segment impacts if we have forecasts
+        if forecast_list:
+            for rec_idx, recommendation_combo in enumerate(top_3, 1):
+                rec_rules = recommendation_combo.get("rules", [])
+                rec_key = f"recommendation_{rec_idx}"
+                
+                for segment in forecast_list:
+                    dimensions = segment.get("dimensions", {})
+                    baseline = segment.get("baseline_metrics", {})
+                    forecast_30d = segment.get("forecast_30d", {})
+                    
+                    # Get baseline metrics with NEW duration/unit_price model
+                    baseline_unit_price = baseline.get("segment_avg_fcs_unit_price", 0)
+                    baseline_duration = baseline.get("segment_avg_fcs_ride_duration", 0)
+                    baseline_rides = forecast_30d.get("predicted_rides", 0)
+                    baseline_revenue = forecast_30d.get("predicted_revenue", 0)
+                    segment_demand_profile = dimensions.get("demand_profile", "MEDIUM")
+                    
+                    if baseline_unit_price == 0 or baseline_duration == 0:
+                        continue
+                    
+                    # Apply ALL rules from this recommendation to this segment
+                    combined_multiplier = 1.0
+                    applied_rules = []
+                    
+                    for rule_id in rec_rules:
+                        # Find rule details
+                        rule = next((r for r in rules_list if r.get("rule_id") == rule_id), None)
+                        if not rule:
+                            continue
+                        
+                        rule_condition = rule.get("condition", {})
+                        if not rule_applies_to_segment(rule_condition, dimensions):
+                            continue
+                        
+                        # Apply rule multiplier
+                        action = rule.get("action", {})
+                        rule_multiplier = action.get("multiplier", action.get("max_multiplier", 1.0))
+                        combined_multiplier *= rule_multiplier
+                        applied_rules.append({
+                            "rule_id": rule_id,
+                            "rule_name": rule.get("name", "Unknown"),
+                            "multiplier": rule_multiplier
+                        })
+                    
+                    # Calculate new prices with NEW model: unit_price × duration
+                    new_unit_price = baseline_unit_price * combined_multiplier
+                    new_total_price = new_unit_price * baseline_duration
+                    
+                    # Calculate demand impact using elasticity
+                    elasticity = get_demand_elasticity(dimensions)
+                    price_change_pct = ((new_unit_price - baseline_unit_price) / baseline_unit_price * 100) if baseline_unit_price > 0 else 0
+                    demand_change_pct = elasticity * price_change_pct
+                    new_rides = baseline_rides * (1 + demand_change_pct / 100)
+                    new_revenue = new_rides * new_total_price
+                    
+                    # Store per-segment impact with NEW structure
+                    per_segment_impacts[rec_key].append({
+                        "segment": {
+                            "location_category": dimensions.get("location", ""),
+                            "loyalty_tier": dimensions.get("loyalty_tier", ""),
+                            "vehicle_type": dimensions.get("vehicle_type", ""),
+                            "demand_profile": segment_demand_profile,
+                            "pricing_model": dimensions.get("pricing_model", "STANDARD")
+                        },
+                        "baseline": {
+                            "rides_30d": round(baseline_rides, 2),
+                            "unit_price_per_minute": round(baseline_unit_price, 4),
+                            "ride_duration_minutes": round(baseline_duration, 2),
+                            "revenue_30d": round(baseline_revenue, 2),
+                            "segment_demand_profile": segment_demand_profile
+                        },
+                        "with_recommendation": {
+                            "rides_30d": round(new_rides, 2),
+                            "unit_price_per_minute": round(new_unit_price, 4),
+                            "ride_duration_minutes": round(baseline_duration, 2),  # Duration stays same
+                            "revenue_30d": round(new_revenue, 2),
+                            "price_change_pct": round(price_change_pct, 2),
+                            "demand_change_pct": round(demand_change_pct, 2),
+                            "revenue_change_pct": round(((new_revenue - baseline_revenue) / baseline_revenue * 100) if baseline_revenue > 0 else 0, 2),
+                            "segment_demand_profile": segment_demand_profile
+                        },
+                        "applied_rules": applied_rules,
+                        "explanation": f"Applied {len(applied_rules)} rule(s): {', '.join(r['rule_name'] for r in applied_rules)}" if applied_rules else "No rules applied to this segment"
+                    })
+        
         result = {
             "summary": {
                 "total_rules_analyzed": len(rules_list),
                 "total_combinations_tested": len(all_combinations) if 'all_combinations' in locals() else 0,
-                "top_recommendations": len(recommendations)
+                "top_recommendations": len(recommendations),
+                "segments_analyzed": len(forecast_list),
+                "per_segment_records": sum(len(impacts) for impacts in per_segment_impacts.values())
             },
-            "recommendations": recommendations
+            "recommendations": recommendations,
+            "per_segment_impacts": per_segment_impacts
         }
         
         return json.dumps(result)

@@ -802,3 +802,177 @@ async def get_analytics_revenue(period: str = Query(default="30d", description="
         raise HTTPException(status_code=500, detail=f"Error fetching analytics data: {str(e)}")
 
 
+@router.get("/pricing-strategies")
+async def get_pricing_strategies(
+    filter_by: Optional[str] = Query(
+        None,
+        description="Filter type: 'business_objectives', 'pricing_rules', 'pipeline_results', or 'all'",
+        regex="^(business_objectives|pricing_rules|pipeline_results|all)?$"
+    ),
+    category: Optional[str] = Query(
+        None,
+        description="Filter by category (e.g., 'rush_hour', 'location_based', 'metadata')"
+    ),
+    limit: int = Query(100, description="Maximum number of results to return", ge=1, le=1000),
+    include_pipeline_data: bool = Query(
+        False,
+        description="Include latest pipeline result with forecasts and recommendations"
+    )
+) -> Dict[str, Any]:
+    """
+    Get pricing strategies with flexible filtering for analytics dashboard.
+    
+    **Use Cases:**
+    - `filter_by=business_objectives` - Get business objectives only
+    - `filter_by=pricing_rules` - Get all pricing rules
+    - `filter_by=pipeline_results` - Get latest pipeline execution results
+    - `filter_by=all` or no filter - Get everything
+    - `category=rush_hour` - Get only rush hour rules
+    - `include_pipeline_data=true` - Include forecasts and recommendations
+    
+    **Returns:**
+    - Pricing rules with categories
+    - Business objectives with targets
+    - Pipeline results (forecasts, recommendations, what-if analysis)
+    - Summary statistics
+    
+    **Example for Dashboard:**
+    ```
+    GET /api/v1/analytics/pricing-strategies?filter_by=business_objectives&include_pipeline_data=true
+    ```
+    Returns business objectives + latest pipeline data for progress tracking.
+    """
+    try:
+        database = get_database()
+        if database is None:
+            raise HTTPException(status_code=500, detail="Database connection not available")
+        
+        collection = database["pricing_strategies"]
+        response_data = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "filter_applied": filter_by or "all",
+            "category_filter": category
+        }
+        
+        # Query based on filter
+        query = {}
+        
+        if filter_by == "business_objectives":
+            query["category"] = "business_objectives"
+        elif filter_by == "pricing_rules":
+            query["category"] = {"$nin": ["business_objectives", "metadata", "expected_outcomes"]}
+            query["source"] = "pricing_strategies_upload"
+        elif filter_by == "pipeline_results":
+            query["type"] = "pipeline_result"
+        elif category:
+            query["category"] = category
+        
+        # Execute query for uploaded strategies
+        if filter_by != "pipeline_results":
+            cursor = collection.find(query).limit(limit)
+            strategies = []
+            async for doc in cursor:
+                doc["_id"] = str(doc["_id"])
+                strategies.append(doc)
+            
+            response_data["strategies"] = strategies
+            response_data["count"] = len(strategies)
+            
+            # Group by category for summary
+            categories = {}
+            for strategy in strategies:
+                cat = strategy.get("category", "unknown")
+                if cat not in categories:
+                    categories[cat] = []
+                categories[cat].append(strategy)
+            
+            response_data["categories_summary"] = {
+                cat: len(items) for cat, items in categories.items()
+            }
+        
+        # Get latest pipeline result if requested or if filter is pipeline_results
+        if include_pipeline_data or filter_by == "pipeline_results":
+            pipeline_result = await collection.find_one(
+                {"type": "pipeline_result"},
+                sort=[("timestamp", -1)]
+            )
+            
+            if pipeline_result:
+                pipeline_result["_id"] = str(pipeline_result["_id"])
+                
+                # Extract key sections for dashboard
+                pipeline_summary = {
+                    "run_id": pipeline_result.get("run_id"),
+                    "timestamp": pipeline_result.get("timestamp"),
+                    "status": pipeline_result.get("status", "completed")
+                }
+                
+                # Add forecasts summary
+                if "forecasts" in pipeline_result:
+                    forecasts = pipeline_result["forecasts"]
+                    pipeline_summary["forecasts"] = {
+                        "segments_count": len(forecasts.get("segmented_forecasts", [])),
+                        "aggregated": forecasts.get("aggregated_forecasts", {})
+                    }
+                
+                # Add recommendations summary
+                if "recommendations" in pipeline_result:
+                    recs = pipeline_result["recommendations"]
+                    pipeline_summary["recommendations"] = {
+                        "top_3_count": len(recs.get("top_3", [])),
+                        "per_segment_impacts_count": len(recs.get("per_segment_impacts", [])),
+                        "top_3": recs.get("top_3", [])
+                    }
+                
+                # Add what-if analysis with business objectives
+                if "what_if_analysis" in pipeline_result:
+                    what_if = pipeline_result["what_if_analysis"]
+                    pipeline_summary["what_if_analysis"] = {
+                        "baseline": what_if.get("baseline", {}),
+                        "business_objectives_impact": what_if.get("business_objectives_impact", {}),
+                        "confidence": what_if.get("confidence", "unknown")
+                    }
+                    
+                    # Extract business objectives for easy access
+                    if "business_objectives_impact" in what_if:
+                        response_data["business_objectives_progress"] = {
+                            "revenue": {
+                                "target": "15-25% increase",
+                                "projected": what_if["business_objectives_impact"].get("revenue", {}).get("revenue_increase_pct", 0),
+                                "target_met": what_if["business_objectives_impact"].get("revenue", {}).get("target_met", False),
+                                "confidence": what_if["business_objectives_impact"].get("revenue", {}).get("confidence", "unknown")
+                            },
+                            "profit_margin": {
+                                "target": "40%+ margin",
+                                "projected": what_if["business_objectives_impact"].get("profit_margin", {}).get("projected_margin_pct", 0),
+                                "target_met": what_if["business_objectives_impact"].get("profit_margin", {}).get("target_met", False),
+                                "confidence": what_if["business_objectives_impact"].get("profit_margin", {}).get("confidence", "unknown")
+                            },
+                            "competitive": {
+                                "target": "Close 5% gap",
+                                "gap_closed_pct": what_if["business_objectives_impact"].get("competitive", {}).get("gap_closed_pct", 0),
+                                "target_met": what_if["business_objectives_impact"].get("competitive", {}).get("target_met", False),
+                                "confidence": what_if["business_objectives_impact"].get("competitive", {}).get("confidence", "unknown")
+                            },
+                            "retention": {
+                                "target": "10-15% churn reduction",
+                                "projected": what_if["business_objectives_impact"].get("retention", {}).get("churn_reduction_pct", 0),
+                                "target_met": what_if["business_objectives_impact"].get("retention", {}).get("target_met", False),
+                                "confidence": what_if["business_objectives_impact"].get("retention", {}).get("confidence", "unknown")
+                            }
+                        }
+                
+                # Add report metadata
+                if "report_metadata" in pipeline_result:
+                    pipeline_summary["report"] = pipeline_result["report_metadata"]
+                
+                response_data["pipeline_result"] = pipeline_summary
+        
+        return response_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching pricing strategies: {e}")
+        raise HTTPException(status_code=500, detail=f"Error fetching pricing strategies: {str(e)}")
+
