@@ -417,13 +417,15 @@ def calculate_segment_estimate(
     except Exception as e:
         logger.error(f"Error calculating segment estimate: {e}")
         
-        # Return conservative fallback
+        # Return conservative fallback with NEW data model fields
         return {
             "segment": segment_dimensions,
             "historical_baseline": {
-                "avg_price": 15.0,
-                "avg_distance": 5.0,
-                "avg_duration": 15.0,
+                "segment_avg_fcs_unit_price": 1.0,  # $1/min default
+                "segment_avg_fcs_ride_duration": 15.0,  # 15 min default
+                "segment_avg_riders_per_order": 1.0,
+                "segment_avg_drivers_per_order": 0.5,
+                "segment_demand_profile": "MEDIUM",
                 "sample_size": 0,
                 "data_source": "fallback"
             },
