@@ -55,9 +55,9 @@ def generate_segment_dynamic_pricing_report(pipeline_result_id: str = None) -> D
         if pipeline_result_id:
             pipeline_result = pipeline_collection.find_one({"_id": pipeline_result_id})
         else:
-            # Get most recent pipeline result
+            # Get most recent pipeline result by completed_at
             pipeline_result = pipeline_collection.find_one(
-                sort=[("timestamp", pymongo.DESCENDING)]
+                sort=[("completed_at", pymongo.DESCENDING)]
             )
         
         if not pipeline_result:
@@ -112,7 +112,7 @@ def generate_segment_dynamic_pricing_report(pipeline_result_id: str = None) -> D
                 hwco_revenue = hwco_ride_count * hwco_avg_duration * hwco_avg_unit_price
                 hwco_explanation = f"HWCO historical average: {hwco_ride_count} rides, ${hwco_avg_unit_price:.2f}/min, {hwco_avg_duration:.1f} min avg, ${hwco_revenue:.2f} revenue"
             else:
-                hwco_avg_price = 0
+                hwco_avg_unit_price = 0
                 hwco_ride_count = 0
                 hwco_revenue = 0
                 hwco_explanation = "No HWCO historical data for this segment"
@@ -130,7 +130,7 @@ def generate_segment_dynamic_pricing_report(pipeline_result_id: str = None) -> D
                 lyft_revenue = lyft_ride_count * lyft_avg_duration * lyft_avg_unit_price
                 lyft_explanation = f"Lyft competitor average: {lyft_ride_count} rides, ${lyft_avg_unit_price:.2f}/min, {lyft_avg_duration:.1f} min avg, ${lyft_revenue:.2f} revenue"
             else:
-                lyft_avg_price = 0
+                lyft_avg_unit_price = 0
                 lyft_ride_count = 0
                 lyft_revenue = 0
                 lyft_explanation = "No Lyft competitor data for this segment"
