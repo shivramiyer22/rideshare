@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from 'react';
-import { io, Socket } from 'socket.io-client';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000';
 
@@ -12,49 +11,75 @@ export interface Message {
 }
 
 export function useChatbot() {
-  const [socket, setSocket] = useState<Socket | null>(null);
+  const [socket, setSocket] = useState<WebSocket | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
 
   useEffect(() => {
-    const newSocket = io(WS_URL, {
-      path: '/ws/chatbot',
-      transports: ['websocket'],
-    });
+    // Create WebSocket connection to backend
+    const ws = new WebSocket(`${WS_URL}/api/v1/chatbot/ws`);
 
-    newSocket.on('connect', () => {
+    ws.onopen = () => {
+      console.log('WebSocket connected');
       setIsConnected(true);
-    });
+    };
 
-    newSocket.on('disconnect', () => {
+    ws.onclose = () => {
+      console.log('WebSocket disconnected');
       setIsConnected(false);
-    });
+    };
 
-    newSocket.on('message', (data: any) => {
-      setIsTyping(false);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now().toString(),
-          role: 'assistant',
-          content: data.content,
-          timestamp: new Date(),
-          agent: data.agent,
-        },
-      ]);
-    });
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      setIsConnected(false);
+    };
 
-    setSocket(newSocket);
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        setIsTyping(false);
+        
+        if (data.error) {
+          console.error('Chat error:', data.error);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now().toString(),
+              role: 'assistant',
+              content: `Error: ${data.error}`,
+              timestamp: new Date(),
+            },
+          ]);
+        } else if (data.response) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now().toString(),
+              role: 'assistant',
+              content: data.response,
+              timestamp: new Date(),
+              agent: data.agent,
+            },
+          ]);
+        }
+      } catch (error) {
+        console.error('Error parsing message:', error);
+      }
+    };
+
+    setSocket(ws);
 
     return () => {
-      newSocket.close();
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
     };
   }, []);
 
   const sendMessage = useCallback(
     (content: string) => {
-      if (!socket || !isConnected) return;
+      if (!socket || socket.readyState !== WebSocket.OPEN || !isConnected) return;
 
       const userMessage: Message = {
         id: Date.now().toString(),
@@ -65,7 +90,9 @@ export function useChatbot() {
 
       setMessages((prev) => [...prev, userMessage]);
       setIsTyping(true);
-      socket.emit('message', { content });
+      
+      // Send message to backend
+      socket.send(JSON.stringify({ message: content }));
     },
     [socket, isConnected]
   );
