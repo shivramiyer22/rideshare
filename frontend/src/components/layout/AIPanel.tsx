@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Database,
   MessageSquare,
@@ -66,12 +66,24 @@ const agents = [
 export function AIPanel() {
   const [isExpanded, setIsExpanded] = useState(false);
   const [inputValue, setInputValue] = useState('');
-  const { messages, isConnected, isTyping, sendMessage } = useChatbot();
+  const { messages, isConnected, isTyping, sendMessage, clearMessages, threadId } = useChatbot();
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, isTyping]);
 
   const handleSend = () => {
     if (inputValue.trim()) {
       sendMessage(inputValue);
       setInputValue('');
+    }
+  };
+
+  const handleClearChat = () => {
+    if (confirm('Are you sure you want to clear the chat history?')) {
+      clearMessages();
     }
   };
 
@@ -107,6 +119,14 @@ export function AIPanel() {
             <span className="text-xs text-white/70">
               {isConnected ? 'Connected' : 'Disconnected'}
             </span>
+            {messages.length > 0 && (
+              <button
+                onClick={handleClearChat}
+                className="ml-auto text-xs text-white/70 hover:text-white hover:underline"
+              >
+                Clear Chat
+              </button>
+            )}
           </div>
         </div>
 
@@ -160,7 +180,7 @@ export function AIPanel() {
                     : 'bg-muted mr-4'
                 )}
               >
-                <p className="text-sm">{message.content}</p>
+                <p className="text-sm whitespace-pre-wrap">{message.content}</p>
                 {message.agent && (
                   <p className="text-xs opacity-70 mt-1">via {message.agent}</p>
                 )}
@@ -171,11 +191,12 @@ export function AIPanel() {
             <div className="p-3 rounded-lg bg-muted mr-4">
               <div className="flex gap-1">
                 <div className="w-2 h-2 rounded-full bg-muted-foreground animate-bounce" />
-                <div className="w-2 h-2 rounded-full bg-muted-foreground animate-bounce delay-100" />
-                <div className="w-2 h-2 rounded-full bg-muted-foreground animate-bounce delay-200" />
+                <div className="w-2 h-2 rounded-full bg-muted-foreground animate-bounce" style={{ animationDelay: '0.1s' }} />
+                <div className="w-2 h-2 rounded-full bg-muted-foreground animate-bounce" style={{ animationDelay: '0.2s' }} />
               </div>
             </div>
           )}
+          <div ref={messagesEndRef} />
         </div>
 
         {/* Input */}

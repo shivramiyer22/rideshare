@@ -3,15 +3,19 @@ Routes and endpoints related to chatbot interactions.
 
 Includes:
 - POST /chat - HTTP endpoint for chatbot (for compatibility)
+- POST /chat/stream - Streaming endpoint with Server-Sent Events (SSE)
 - WebSocket /ws/chatbot - Real-time chatbot with conversation context
 - GET /history - Retrieve chat history for a user
 """
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query
-from typing import Dict, Any, List, Optional
+from fastapi.responses import StreamingResponse
+from typing import Dict, Any, List, Optional, AsyncGenerator
 from pydantic import BaseModel
 from datetime import datetime
 import time
 import logging
+import json
+import asyncio
 from app.agents.orchestrator import orchestrator_agent
 from app.database import get_database
 from langgraph.checkpoint.memory import InMemorySaver
@@ -110,6 +114,120 @@ async def chat(message: ChatMessage) -> ChatResponse:
     except Exception as e:
         logger.error(f"Chat processing error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Chat processing failed: {str(e)}")
+
+
+@router.post("/chat/stream")
+async def chat_stream(message: ChatMessage):
+    """
+    Handle chatbot conversation with streaming response (Server-Sent Events).
+    
+    This endpoint streams the response token by token in real-time,
+    providing a better user experience for long responses.
+    
+    Args:
+        message: User message and context
+    
+    Returns:
+        StreamingResponse: SSE stream with tokens as they're generated
+        
+    Example Response (SSE format):
+        data: {"token": "Hello", "done": false}
+        data: {"token": " there", "done": false}
+        data: {"token": "!", "done": false}
+        data: {"token": "", "done": true, "context": {...}}
+    """
+    try:
+        # Check if orchestrator agent is initialized
+        if orchestrator_agent is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Chatbot service is unavailable. Please ensure OPENAI_API_KEY is configured."
+            )
+        
+        thread_id = message.context.get("thread_id", f"http_chat_{int(time.time() * 1000)}")
+        user_id = message.context.get("user_id", "anonymous")
+        
+        # Save user message to history
+        await save_chat_message(user_id, thread_id, "user", message.message)
+        
+        async def generate_tokens() -> AsyncGenerator[str, None]:
+            """Generate tokens from the orchestrator agent stream."""
+            try:
+                config = {"configurable": {"thread_id": thread_id}}
+                full_response = ""
+                
+                # Use agent's stream method for token-by-token generation
+                async for chunk in orchestrator_agent.astream(
+                    {"messages": [{"role": "user", "content": message.message}]},
+                    config
+                ):
+                    # Extract content from the chunk
+                    if isinstance(chunk, dict):
+                        messages = chunk.get("messages", [])
+                        if messages and len(messages) > 0:
+                            last_message = messages[-1]
+                            
+                            # Handle different message formats
+                            if hasattr(last_message, 'content'):
+                                content = last_message.content
+                            elif isinstance(last_message, dict):
+                                content = last_message.get('content', '')
+                            else:
+                                content = str(last_message)
+                            
+                            # Calculate the new token (delta)
+                            if content and len(content) > len(full_response):
+                                new_token = content[len(full_response):]
+                                full_response = content
+                                
+                                # Send token as SSE
+                                yield f"data: {json.dumps({'token': new_token, 'done': False})}\n\n"
+                                
+                                # Small delay for smoother streaming
+                                await asyncio.sleep(0.01)
+                
+                # If no streaming happened, fall back to full response
+                if not full_response:
+                    # Get the final result
+                    result = orchestrator_agent.invoke(
+                        {"messages": [{"role": "user", "content": message.message}]},
+                        config
+                    )
+                    full_response = result["messages"][-1].content if result.get("messages") else "I'm sorry, I couldn't process that."
+                    
+                    # Stream the full response word by word for better UX
+                    words = full_response.split()
+                    for i, word in enumerate(words):
+                        token = word if i == 0 else f" {word}"
+                        yield f"data: {json.dumps({'token': token, 'done': False})}\n\n"
+                        await asyncio.sleep(0.05)  # Simulate streaming
+                
+                # Save assistant response to history
+                await save_chat_message(user_id, thread_id, "assistant", full_response)
+                
+                # Send completion signal with context
+                response_context = {**message.context, "thread_id": thread_id, "user_id": user_id}
+                yield f"data: {json.dumps({'token': '', 'done': True, 'context': response_context, 'full_response': full_response})}\n\n"
+                
+            except Exception as e:
+                logger.error(f"Streaming error: {e}", exc_info=True)
+                yield f"data: {json.dumps({'error': str(e), 'done': True})}\n\n"
+        
+        return StreamingResponse(
+            generate_tokens(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"  # Disable nginx buffering
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Chat streaming setup error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Chat streaming failed: {str(e)}")
 
 
 @router.websocket("/ws")
