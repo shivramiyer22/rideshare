@@ -779,12 +779,14 @@ def generate_strategic_recommendations(forecasts: str, rules: str) -> str:
                     baseline = segment.get("baseline_metrics", {})
                     forecast_30d = segment.get("forecast_30d", {})
                     
-                    # Get baseline metrics
-                    baseline_price = baseline.get("pricing_engine_price", baseline.get("avg_price", 0))
+                    # Get baseline metrics with NEW duration/unit_price model
+                    baseline_unit_price = baseline.get("segment_avg_fcs_unit_price", 0)
+                    baseline_duration = baseline.get("segment_avg_fcs_ride_duration", 0)
                     baseline_rides = forecast_30d.get("predicted_rides", 0)
                     baseline_revenue = forecast_30d.get("predicted_revenue", 0)
+                    segment_demand_profile = dimensions.get("demand_profile", "MEDIUM")
                     
-                    if baseline_price == 0:
+                    if baseline_unit_price == 0 or baseline_duration == 0:
                         continue
                     
                     # Apply ALL rules from this recommendation to this segment
@@ -811,50 +813,42 @@ def generate_strategic_recommendations(forecasts: str, rules: str) -> str:
                             "multiplier": rule_multiplier
                         })
                     
-                    # Calculate new price using PricingEngine with combined multiplier
-                    try:
-                        # Build order_data from segment dimensions
-                        order_data = build_order_data_from_segment(dimensions, [])
-                        
-                        # Apply combined multiplier as if it's a rule
-                        order_data["surge_multiplier"] = order_data.get("surge_multiplier", 1.0) * combined_multiplier
-                        
-                        # Calculate price using PricingEngine
-                        price_result = pricing_engine.calculate_price(order_data)
-                        new_price = price_result.get("final_price", baseline_price * combined_multiplier)
-                    except Exception as e:
-                        # Fallback to simple multiplier
-                        logger.warning(f"PricingEngine error in per-segment calculation: {e}")
-                        new_price = baseline_price * combined_multiplier
+                    # Calculate new prices with NEW model: unit_price × duration
+                    new_unit_price = baseline_unit_price * combined_multiplier
+                    new_total_price = new_unit_price * baseline_duration
                     
                     # Calculate demand impact using elasticity
                     elasticity = get_demand_elasticity(dimensions)
-                    price_change_pct = ((new_price - baseline_price) / baseline_price * 100) if baseline_price > 0 else 0
+                    price_change_pct = ((new_unit_price - baseline_unit_price) / baseline_unit_price * 100) if baseline_unit_price > 0 else 0
                     demand_change_pct = elasticity * price_change_pct
                     new_rides = baseline_rides * (1 + demand_change_pct / 100)
-                    new_revenue = new_rides * new_price
+                    new_revenue = new_rides * new_total_price
                     
-                    # Store per-segment impact
+                    # Store per-segment impact with NEW structure
                     per_segment_impacts[rec_key].append({
                         "segment": {
                             "location_category": dimensions.get("location", ""),
                             "loyalty_tier": dimensions.get("loyalty_tier", ""),
                             "vehicle_type": dimensions.get("vehicle_type", ""),
-                            "demand_profile": dimensions.get("demand_profile", ""),
+                            "demand_profile": segment_demand_profile,
                             "pricing_model": dimensions.get("pricing_model", "STANDARD")
                         },
                         "baseline": {
                             "rides_30d": round(baseline_rides, 2),
-                            "unit_price": round(baseline_price, 2),
-                            "revenue_30d": round(baseline_revenue, 2)
+                            "unit_price_per_minute": round(baseline_unit_price, 4),
+                            "ride_duration_minutes": round(baseline_duration, 2),
+                            "revenue_30d": round(baseline_revenue, 2),
+                            "segment_demand_profile": segment_demand_profile
                         },
                         "with_recommendation": {
                             "rides_30d": round(new_rides, 2),
-                            "unit_price": round(new_price, 2),
+                            "unit_price_per_minute": round(new_unit_price, 4),
+                            "ride_duration_minutes": round(baseline_duration, 2),  # Duration stays same
                             "revenue_30d": round(new_revenue, 2),
                             "price_change_pct": round(price_change_pct, 2),
                             "demand_change_pct": round(demand_change_pct, 2),
-                            "revenue_change_pct": round(((new_revenue - baseline_revenue) / baseline_revenue * 100) if baseline_revenue > 0 else 0, 2)
+                            "revenue_change_pct": round(((new_revenue - baseline_revenue) / baseline_revenue * 100) if baseline_revenue > 0 else 0, 2),
+                            "segment_demand_profile": segment_demand_profile
                         },
                         "applied_rules": applied_rules,
                         "explanation": f"Applied {len(applied_rules)} rule(s): {', '.join(r['rule_name'] for r in applied_rules)}" if applied_rules else "No rules applied to this segment"
