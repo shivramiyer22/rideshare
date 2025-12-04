@@ -176,6 +176,14 @@ class AgentPipeline:
             
             run_record["phases"]["recommendation"] = recommendation_result
             run_record["results"]["recommendations"] = recommendation_result.get("data", {})
+            
+            # CRITICAL: Add per_segment_impacts to root for report generator
+            if recommendation_result.get("success"):
+                per_segment_impacts = recommendation_result.get("data", {}).get("per_segment_impacts", {})
+                if per_segment_impacts:
+                    run_record["per_segment_impacts"] = per_segment_impacts
+                    logger.info(f"  Added per_segment_impacts to root level for report generator")
+            
             logger.info(f"  Recommendations: {'✓' if recommendation_result.get('success') else '✗'}")
             
             # ================================================================
@@ -771,24 +779,24 @@ class AgentPipeline:
             from app.agents.recommendation import generate_strategic_recommendations
             
             # Extract forecasts and rules from context
-            forecasts_data = context.get("forecasting", {}).get("data", {})
-            rules_data = context.get("analysis", {}).get("data", {})
+            # Context structure: {"forecasting": {forecasting data}, "analysis": {analysis data}}
+            # These are already the .data portions from each phase result
+            forecasts_data = context.get("forecasting", {})
+            rules_data = context.get("analysis", {})
             
             # Extract the actual forecast and rules structures
-            forecast_result = forecasts_data.get("forecasts", {})
+            forecast_result = forecasts_data.get("forecasts", forecasts_data)
             if isinstance(forecast_result, dict):
                 forecasts_json = json.dumps(forecast_result)
             else:
                 forecasts_json = json.dumps(forecasts_data) if forecasts_data else "{}"
             
-            # FIXED: rules_data already contains "pricing_rules" key from Analysis phase
-            # We need to extract it properly, not double-extract
+            # Extract pricing_rules directly (not nested in another "data" key)
             pricing_rules = rules_data.get("pricing_rules", {})
             if pricing_rules:
-                # pricing_rules is the actual rules object
                 rules_json = json.dumps(pricing_rules)
             else:
-                # Fallback: use entire rules_data if pricing_rules key doesn't exist
+                # Fallback: maybe rules_data IS the pricing_rules object
                 rules_json = json.dumps(rules_data) if rules_data else "{}"
             
             # Log what we're passing
