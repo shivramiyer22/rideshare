@@ -110,12 +110,21 @@ def generate_segment_dynamic_pricing_report(pipeline_result_id: str = None) -> D
                 hwco_ride_count = len(hwco_rides)
                 # Revenue = rides × duration × unit_price
                 hwco_revenue = hwco_ride_count * hwco_avg_duration * hwco_avg_unit_price
-                hwco_explanation = f"HWCO historical average: {hwco_ride_count} rides, ${hwco_avg_unit_price:.2f}/min, {hwco_avg_duration:.1f} min avg, ${hwco_revenue:.2f} revenue"
+                
+                # Create detailed explanation for dashboard
+                hwco_explanation = (
+                    f"Continue Current HWCO Strategy: Maintain historical pricing of ${hwco_avg_unit_price:.2f}/min "
+                    f"with {hwco_avg_duration:.1f} min average duration. "
+                    f"Based on {hwco_ride_count} historical rides in this segment. "
+                    f"Projected 30-day revenue: ${hwco_revenue:.2f}. "
+                    f"No pricing adjustments or rule changes applied."
+                )
             else:
+                hwco_avg_duration = 0
                 hwco_avg_unit_price = 0
                 hwco_ride_count = 0
                 hwco_revenue = 0
-                hwco_explanation = "No HWCO historical data for this segment"
+                hwco_explanation = "No HWCO historical data available for this segment. Unable to establish baseline metrics."
             
             # Get Lyft competitor baseline
             lyft_query = hwco_query.copy()
@@ -128,12 +137,21 @@ def generate_segment_dynamic_pricing_report(pipeline_result_id: str = None) -> D
                 lyft_ride_count = len(lyft_rides)
                 # Revenue = rides × duration × unit_price
                 lyft_revenue = lyft_ride_count * lyft_avg_duration * lyft_avg_unit_price
-                lyft_explanation = f"Lyft competitor average: {lyft_ride_count} rides, ${lyft_avg_unit_price:.2f}/min, {lyft_avg_duration:.1f} min avg, ${lyft_revenue:.2f} revenue"
+                
+                # Create detailed explanation for dashboard
+                lyft_explanation = (
+                    f"Match Lyft Competitor Strategy: Adopt Lyft's pricing of ${lyft_avg_unit_price:.2f}/min "
+                    f"with {lyft_avg_duration:.1f} min average duration. "
+                    f"Based on {lyft_ride_count} competitor rides analyzed in this segment. "
+                    f"Projected 30-day revenue: ${lyft_revenue:.2f}. "
+                    f"Competitive positioning strategy with no additional rule adjustments."
+                )
             else:
+                lyft_avg_duration = 0
                 lyft_avg_unit_price = 0
                 lyft_ride_count = 0
                 lyft_revenue = 0
-                lyft_explanation = "No Lyft competitor data for this segment"
+                lyft_explanation = "No Lyft competitor data available for this segment. Unable to benchmark against competitor pricing."
             
             # Build segment report row
             segment_report = {
@@ -141,47 +159,55 @@ def generate_segment_dynamic_pricing_report(pipeline_result_id: str = None) -> D
                 "hwco_continue_current": {
                     "rides_30d": hwco_ride_count,
                     "unit_price": round(hwco_avg_unit_price, 2),
+                    "duration_minutes": round(hwco_avg_duration, 2),
                     "revenue_30d": round(hwco_revenue, 2),
                     "explanation": hwco_explanation
                 },
                 "lyft_continue_current": {
                     "rides_30d": lyft_ride_count,
                     "unit_price": round(lyft_avg_unit_price, 2),
+                    "duration_minutes": round(lyft_avg_duration, 2),
                     "revenue_30d": round(lyft_revenue, 2),
                     "explanation": lyft_explanation
                 },
                 "recommendation_1": {
                     "rides_30d": rec1_impact.get("with_recommendation", {}).get("rides_30d", 0),
-                    "unit_price": rec1_impact.get("with_recommendation", {}).get("unit_price", 0),
+                    "unit_price": rec1_impact.get("with_recommendation", {}).get("unit_price_per_minute", 0),
+                    "duration_minutes": rec1_impact.get("with_recommendation", {}).get("ride_duration_minutes", 0),
                     "revenue_30d": rec1_impact.get("with_recommendation", {}).get("revenue_30d", 0),
                     "explanation": rec1_impact.get("explanation", "No rules applied")
                 } if rec1_impact else {
                     "rides_30d": 0,
                     "unit_price": 0,
+                    "duration_minutes": 0,
                     "revenue_30d": 0,
-                    "explanation": "No forecast data"
+                    "explanation": "No forecast data available for this segment"
                 },
                 "recommendation_2": {
                     "rides_30d": rec2_impact.get("with_recommendation", {}).get("rides_30d", 0),
-                    "unit_price": rec2_impact.get("with_recommendation", {}).get("unit_price", 0),
+                    "unit_price": rec2_impact.get("with_recommendation", {}).get("unit_price_per_minute", 0),
+                    "duration_minutes": rec2_impact.get("with_recommendation", {}).get("ride_duration_minutes", 0),
                     "revenue_30d": rec2_impact.get("with_recommendation", {}).get("revenue_30d", 0),
                     "explanation": rec2_impact.get("explanation", "No rules applied")
                 } if rec2_impact else {
                     "rides_30d": 0,
                     "unit_price": 0,
+                    "duration_minutes": 0,
                     "revenue_30d": 0,
-                    "explanation": "No forecast data"
+                    "explanation": "No forecast data available for this segment"
                 },
                 "recommendation_3": {
                     "rides_30d": rec3_impact.get("with_recommendation", {}).get("rides_30d", 0),
-                    "unit_price": rec3_impact.get("with_recommendation", {}).get("unit_price", 0),
+                    "unit_price": rec3_impact.get("with_recommendation", {}).get("unit_price_per_minute", 0),
+                    "duration_minutes": rec3_impact.get("with_recommendation", {}).get("ride_duration_minutes", 0),
                     "revenue_30d": rec3_impact.get("with_recommendation", {}).get("revenue_30d", 0),
                     "explanation": rec3_impact.get("explanation", "No rules applied")
                 } if rec3_impact else {
                     "rides_30d": 0,
                     "unit_price": 0,
+                    "duration_minutes": 0,
                     "revenue_30d": 0,
-                    "explanation": "No forecast data"
+                    "explanation": "No forecast data available for this segment"
                 }
             }
             
@@ -217,12 +243,12 @@ def convert_report_to_csv(report: Dict[str, Any]) -> str:
     
     CSV columns:
     - Segment dimensions (5 columns)
-    - HWCO Continue Current (4 columns: rides, price, revenue, explanation)
-    - Lyft Continue Current (4 columns: rides, price, revenue, explanation)
-    - Recommendation 1 (4 columns: rides, price, revenue, explanation)
-    - Recommendation 2 (4 columns: rides, price, revenue, explanation)
-    - Recommendation 3 (4 columns: rides, price, revenue, explanation)
-    Total: 5 + 4*5 = 25 columns
+    - HWCO Continue Current (5 columns: rides, unit_price, duration, revenue, explanation)
+    - Lyft Continue Current (5 columns: rides, unit_price, duration, revenue, explanation)
+    - Recommendation 1 (5 columns: rides, unit_price, duration, revenue, explanation)
+    - Recommendation 2 (5 columns: rides, unit_price, duration, revenue, explanation)
+    - Recommendation 3 (5 columns: rides, unit_price, duration, revenue, explanation)
+    Total: 5 + 5*5 = 30 columns
     
     Args:
         report: Report dictionary from generate_segment_dynamic_pricing_report()
@@ -249,26 +275,31 @@ def convert_report_to_csv(report: Dict[str, Any]) -> str:
             # HWCO Continue Current
             "hwco_rides_30d",
             "hwco_unit_price",
+            "hwco_duration_minutes",
             "hwco_revenue_30d",
             "hwco_explanation",
             # Lyft Continue Current
             "lyft_rides_30d",
             "lyft_unit_price",
+            "lyft_duration_minutes",
             "lyft_revenue_30d",
             "lyft_explanation",
             # Recommendation 1
             "rec1_rides_30d",
             "rec1_unit_price",
+            "rec1_duration_minutes",
             "rec1_revenue_30d",
             "rec1_explanation",
             # Recommendation 2
             "rec2_rides_30d",
             "rec2_unit_price",
+            "rec2_duration_minutes",
             "rec2_revenue_30d",
             "rec2_explanation",
             # Recommendation 3
             "rec3_rides_30d",
             "rec3_unit_price",
+            "rec3_duration_minutes",
             "rec3_revenue_30d",
             "rec3_explanation"
         ]
@@ -295,26 +326,31 @@ def convert_report_to_csv(report: Dict[str, Any]) -> str:
                 # HWCO Continue Current
                 "hwco_rides_30d": hwco.get("rides_30d", 0),
                 "hwco_unit_price": hwco.get("unit_price", 0),
+                "hwco_duration_minutes": hwco.get("duration_minutes", 0),
                 "hwco_revenue_30d": hwco.get("revenue_30d", 0),
                 "hwco_explanation": hwco.get("explanation", ""),
                 # Lyft Continue Current
                 "lyft_rides_30d": lyft.get("rides_30d", 0),
                 "lyft_unit_price": lyft.get("unit_price", 0),
+                "lyft_duration_minutes": lyft.get("duration_minutes", 0),
                 "lyft_revenue_30d": lyft.get("revenue_30d", 0),
                 "lyft_explanation": lyft.get("explanation", ""),
                 # Recommendation 1
                 "rec1_rides_30d": rec1.get("rides_30d", 0),
                 "rec1_unit_price": rec1.get("unit_price", 0),
+                "rec1_duration_minutes": rec1.get("duration_minutes", 0),
                 "rec1_revenue_30d": rec1.get("revenue_30d", 0),
                 "rec1_explanation": rec1.get("explanation", ""),
                 # Recommendation 2
                 "rec2_rides_30d": rec2.get("rides_30d", 0),
                 "rec2_unit_price": rec2.get("unit_price", 0),
+                "rec2_duration_minutes": rec2.get("duration_minutes", 0),
                 "rec2_revenue_30d": rec2.get("revenue_30d", 0),
                 "rec2_explanation": rec2.get("explanation", ""),
                 # Recommendation 3
                 "rec3_rides_30d": rec3.get("rides_30d", 0),
                 "rec3_unit_price": rec3.get("unit_price", 0),
+                "rec3_duration_minutes": rec3.get("duration_minutes", 0),
                 "rec3_revenue_30d": rec3.get("revenue_30d", 0),
                 "rec3_explanation": rec3.get("explanation", "")
             }
