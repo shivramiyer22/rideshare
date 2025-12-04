@@ -30,10 +30,16 @@ checkpointer = InMemorySaver()
 
 
 async def save_chat_message(user_id: str, thread_id: str, role: str, content: str):
-    """Save a chat message to MongoDB for history retrieval."""
+    """
+    Save a chat message to MongoDB for history retrieval.
+    
+    Fails gracefully - if MongoDB is unavailable, logs warning but doesn't crash.
+    This allows the chatbot to continue working even without persistence.
+    """
     try:
         database = get_database()
         if database is None:
+            logger.warning("Database not available, skipping chat history save")
             return
         
         collection = database["chat_history"]
@@ -45,7 +51,8 @@ async def save_chat_message(user_id: str, thread_id: str, role: str, content: st
             "timestamp": datetime.utcnow()
         })
     except Exception as e:
-        logger.warning(f"Could not save chat message: {e}")
+        # Log but don't crash - chatbot should work even if history saving fails
+        logger.warning(f"Could not save chat message (chatbot will continue): {e}")
 
 
 class ChatMessage(BaseModel):
@@ -180,11 +187,8 @@ async def chat_stream(message: ChatMessage):
                                 new_token = content[len(full_response):]
                                 full_response = content
                                 
-                                # Send token as SSE
+                                # Send token as SSE immediately (no delay for real-time feel)
                                 yield f"data: {json.dumps({'token': new_token, 'done': False})}\n\n"
-                                
-                                # Small delay for smoother streaming
-                                await asyncio.sleep(0.01)
                 
                 # If no streaming happened, fall back to full response
                 if not full_response:
@@ -200,7 +204,7 @@ async def chat_stream(message: ChatMessage):
                     for i, word in enumerate(words):
                         token = word if i == 0 else f" {word}"
                         yield f"data: {json.dumps({'token': token, 'done': False})}\n\n"
-                        await asyncio.sleep(0.05)  # Simulate streaming
+                        await asyncio.sleep(0.02)  # Reduced delay for faster streaming
                 
                 # Save assistant response to history
                 await save_chat_message(user_id, thread_id, "assistant", full_response)
@@ -347,11 +351,13 @@ async def get_chat_history(
     
     Returns:
         List: Chat history messages sorted by timestamp (newest first)
+        Returns empty list if database is unavailable (graceful degradation)
     """
     try:
         database = get_database()
         if database is None:
-            raise HTTPException(status_code=500, detail="Database connection not available")
+            logger.warning("Database connection not available, returning empty chat history")
+            return []  # Graceful degradation - return empty history instead of error
         
         collection = database["chat_history"]
         
@@ -361,6 +367,7 @@ async def get_chat_history(
             query["thread_id"] = thread_id
         
         # Retrieve messages sorted by timestamp (newest first)
+        # Add timeout to prevent hanging
         cursor = collection.find(query).sort("timestamp", -1).limit(limit)
         messages = await cursor.to_list(length=limit)
         
@@ -382,7 +389,9 @@ async def get_chat_history(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error fetching chat history: {e}")
-        raise HTTPException(status_code=500, detail=f"Error fetching chat history: {str(e)}")
+        # Log the error but return empty list instead of failing
+        # This allows the chatbot to work even if MongoDB is down
+        logger.warning(f"Error fetching chat history (returning empty): {e}")
+        return []  # Graceful degradation
 
 

@@ -62,7 +62,8 @@ export function useChatbot() {
           user_id: userId,
           thread_id: threadId,
           limit: 50
-        }
+        },
+        timeout: 5000 // 5 second timeout
       });
 
       if (response.data && Array.isArray(response.data)) {
@@ -80,8 +81,10 @@ export function useChatbot() {
         setMessages(loadedMessages);
       }
     } catch (error) {
-      console.error('Failed to load chat history:', error);
-      // Don't show error to user, just start with empty history
+      // Graceful degradation - if history loading fails, just start with empty chat
+      // The user can still use the chatbot without history
+      console.warn('Failed to load chat history (starting fresh):', error);
+      setMessages([]); // Start with empty messages
     }
   }, [threadId, userId]);
 
