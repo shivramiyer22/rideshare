@@ -8,10 +8,6 @@ import { uploadAPI } from '@/lib/api';
 
 type DrawerType =
   | 'historical'
-  | 'competitor'
-  | 'event'
-  | 'traffic'
-  | 'loyalty'
   | null;
 
 interface UploadDrawersProps {
@@ -34,30 +30,6 @@ export function UploadDrawers({ activeDrawer, onClose }: UploadDrawersProps) {
       description: 'Upload CSV or JSON file with 1000+ historical orders for Prophet ML training',
       acceptedFormats: '.csv,.json',
       uploadFn: uploadAPI.historicalData,
-    },
-    competitor: {
-      title: 'Upload Competitor Data',
-      description: 'Upload CSV or Excel file with competitor pricing information',
-      acceptedFormats: '.csv,.xlsx,.xls',
-      uploadFn: uploadAPI.competitorData,
-    },
-    event: {
-      title: 'Upload Event Data',
-      description: 'Upload event files (concerts, sports, etc.)',
-      acceptedFormats: '.csv,.json',
-      uploadFn: uploadAPI.eventData,
-    },
-    traffic: {
-      title: 'Upload Traffic/Demand Signals',
-      description: 'Upload traffic patterns and demand signal data',
-      acceptedFormats: '.csv,.json',
-      uploadFn: uploadAPI.trafficData,
-    },
-    loyalty: {
-      title: 'Upload Customer Loyalty Data',
-      description: 'Upload customer loyalty and segmentation data',
-      acceptedFormats: '.csv,.json',
-      uploadFn: uploadAPI.loyaltyData,
     },
   };
 
@@ -204,10 +176,6 @@ interface UploadButtonProps {
 export function UploadButtons({ onOpenDrawer }: UploadButtonProps) {
   const buttons = [
     { type: 'historical' as DrawerType, label: 'Historical Data', shortLabel: 'Historical' },
-    { type: 'competitor' as DrawerType, label: 'Competitor Data', shortLabel: 'Competitor' },
-    { type: 'event' as DrawerType, label: 'Event Data', shortLabel: 'Events' },
-    { type: 'traffic' as DrawerType, label: 'Traffic Signals', shortLabel: 'Traffic' },
-    { type: 'loyalty' as DrawerType, label: 'Loyalty Data', shortLabel: 'Loyalty' },
   ];
 
   return (

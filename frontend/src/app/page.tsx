@@ -9,7 +9,6 @@ import { PricingTab } from '@/components/tabs/PricingTab';
 import { ForecastingTab } from '@/components/tabs/ForecastingTab';
 import { MarketSignalsTab } from '@/components/tabs/MarketSignalsTab';
 import { ElasticityTab } from '@/components/tabs/ElasticityTab';
-import { CompetitorTab } from '@/components/tabs/CompetitorTab';
 import { UploadTab } from '@/components/tabs/UploadTab';
 
 export default function Home() {
@@ -28,8 +27,6 @@ export default function Home() {
         return <MarketSignalsTab />;
       case 'elasticity':
         return <ElasticityTab />;
-      case 'competitor':
-        return <CompetitorTab />;
       case 'upload':
         return <UploadTab />;
       default:

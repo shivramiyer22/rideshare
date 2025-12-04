@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Calculator, Check, X } from 'lucide-react';
+import { Calculator } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -54,21 +54,9 @@ export function PricingTab() {
     }
   };
 
-  const handleSimulate = async () => {
-    setLoading(true);
-    try {
-      const response = await pricingAPI.simulate(formData);
-      setResult(response.data);
-    } catch (error) {
-      console.error('Pricing simulation failed:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="max-w-2xl mx-auto">
         {/* Pricing Calculator */}
         <Card>
           <CardHeader>
@@ -184,7 +172,7 @@ export function PricingTab() {
               </div>
               <div>
                 <label className="text-sm font-medium mb-2 block">
-                  Location Type
+                  Category
                 </label>
                 <Select
                   value={formData.location_type}
@@ -234,39 +222,24 @@ export function PricingTab() {
             </div>
 
             {/* Actions */}
-            <div className="flex gap-3 pt-4">
+            <div className="pt-4">
               <Button
                 onClick={handleCalculate}
                 disabled={loading}
-                className="flex-1"
+                className="w-full"
               >
                 <Calculator size={16} className="mr-2" />
                 Calculate Price
               </Button>
-              <Button
-                variant="outline"
-                onClick={handleSimulate}
-                disabled={loading}
-                className="flex-1"
-              >
-                Simulate
-              </Button>
             </div>
-          </CardContent>
-        </Card>
 
-        {/* Pricing Result */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Pricing Result</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {result ? (
-              <div className="space-y-6">
-                {/* Final Price */}
+            {/* Calculated Price Result */}
+            {result && (
+              <div className="mt-6 pt-6 border-t border-border space-y-4">
+                {/* Final Price Display */}
                 <div className="text-center p-6 bg-primary/10 rounded-lg">
                   <p className="text-sm text-muted-foreground mb-2">
-                    Final Price
+                    Calculated Price
                   </p>
                   <p className="text-4xl font-bold text-primary">
                     {formatCurrency(result.final_price)}
@@ -279,7 +252,7 @@ export function PricingTab() {
                   </div>
                 </div>
 
-                {/* Breakdown */}
+                {/* Price Breakdown */}
                 <div>
                   <h3 className="text-sm font-medium mb-3">Price Breakdown</h3>
                   <div className="space-y-2">
@@ -341,79 +314,11 @@ export function PricingTab() {
                     </p>
                   </div>
                 )}
-
-                {/* Actions */}
-                <div className="flex gap-3">
-                  <Button className="flex-1">
-                    <Check size={16} className="mr-2" />
-                    Accept
-                  </Button>
-                  <Button variant="outline" className="flex-1">
-                    <X size={16} className="mr-2" />
-                    Reject
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <div className="text-center py-12 text-muted-foreground">
-                <Calculator size={48} className="mx-auto mb-4 opacity-50" />
-                <p>Calculate a price to see results</p>
               </div>
             )}
           </CardContent>
         </Card>
       </div>
-
-      {/* Pricing Models Comparison */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Pricing Models Overview</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="p-4 border border-border rounded-lg">
-              <Badge className="mb-3">CONTRACTED</Badge>
-              <h4 className="font-medium mb-2">Fixed Price</h4>
-              <p className="text-sm text-muted-foreground mb-3">
-                Pre-agreed fixed pricing for corporate clients. No multipliers
-                applied.
-              </p>
-              <ul className="text-xs space-y-1 text-muted-foreground">
-                <li>• P0 Priority (FIFO)</li>
-                <li>• No surge pricing</li>
-                <li>• Guaranteed rates</li>
-              </ul>
-            </div>
-
-            <div className="p-4 border border-border rounded-lg">
-              <Badge className="mb-3">STANDARD</Badge>
-              <h4 className="font-medium mb-2">Dynamic Pricing</h4>
-              <p className="text-sm text-muted-foreground mb-3">
-                Real-time dynamic pricing with all multipliers and surge
-                pricing.
-              </p>
-              <ul className="text-xs space-y-1 text-muted-foreground">
-                <li>• P1 Priority (Revenue sorted)</li>
-                <li>• All multipliers active</li>
-                <li>• Loyalty discounts</li>
-              </ul>
-            </div>
-
-            <div className="p-4 border border-border rounded-lg">
-              <Badge className="mb-3">CUSTOM</Badge>
-              <h4 className="font-medium mb-2">Negotiated Rates</h4>
-              <p className="text-sm text-muted-foreground mb-3">
-                Custom negotiated pricing for special customers or scenarios.
-              </p>
-              <ul className="text-xs space-y-1 text-muted-foreground">
-                <li>• P2 Priority (Revenue sorted)</li>
-                <li>• Flexible multipliers</li>
-                <li>• Custom discounts</li>
-              </ul>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
 }
