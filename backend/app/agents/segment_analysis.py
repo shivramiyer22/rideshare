@@ -27,7 +27,7 @@ from app.pricing_engine import PricingEngine
 logger = logging.getLogger(__name__)
 
 
-def analyze_segment_historical_data(
+async def analyze_segment_historical_data(
     location_category: str,
     loyalty_tier: str,
     vehicle_type: str,
@@ -58,7 +58,7 @@ def analyze_segment_historical_data(
     try:
         # Get MongoDB database
         database = get_database()
-        if not database:
+        if database is None:
             logger.warning("Database not available for segment analysis")
             return {
                 "segment_avg_fcs_unit_price": 0.0,
@@ -83,7 +83,7 @@ def analyze_segment_historical_data(
         
         # Query historical rides
         cursor = collection.find(query_filter).limit(1000)
-        rides = list(cursor)
+        rides = await cursor.to_list(length=1000)
         
         if not rides or len(rides) == 0:
             logger.info(f"No historical data found for segment: {location_category}/{loyalty_tier}/{vehicle_type}/{pricing_model}")
@@ -172,7 +172,7 @@ def analyze_segment_historical_data(
         }
 
 
-def get_segment_forecast_data(
+async def get_segment_forecast_data(
     location_category: str,
     loyalty_tier: str,
     vehicle_type: str,
@@ -203,7 +203,7 @@ def get_segment_forecast_data(
     try:
         # Get MongoDB database
         database = get_database()
-        if not database:
+        if database is None:
             logger.warning("Database not available for forecast data")
             return {
                 "predicted_unit_price_30d": 0.0,
@@ -218,7 +218,7 @@ def get_segment_forecast_data(
         collection = database["pricing_strategies"]
         
         # Query for latest forecast results (stored by pipeline)
-        pipeline_result = collection.find_one(
+        pipeline_result = await collection.find_one(
             {"type": "pipeline_result"},
             sort=[("timestamp", -1)]
         )
@@ -288,7 +288,7 @@ def get_segment_forecast_data(
         }
 
 
-def calculate_segment_estimate(
+async def calculate_segment_estimate(
     segment_dimensions: Dict[str, str],
     trip_details: Optional[Dict[str, float]] = None
 ) -> Dict[str, Any]:
@@ -330,12 +330,12 @@ def calculate_segment_estimate(
         logger.info(f"Calculating estimate for segment: {location_category}/{loyalty_tier}/{vehicle_type}/{pricing_model}")
         
         # 1. Get historical baseline
-        historical = analyze_segment_historical_data(
+        historical = await analyze_segment_historical_data(
             location_category, loyalty_tier, vehicle_type, pricing_model
         )
         
         # 2. Get forecast prediction
-        forecast = get_segment_forecast_data(
+        forecast = await get_segment_forecast_data(
             location_category, loyalty_tier, vehicle_type, pricing_model
         )
         

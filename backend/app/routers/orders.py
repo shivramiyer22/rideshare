@@ -78,7 +78,7 @@ async def estimate_order_price(request: OrderEstimateRequest):
             logger.info(f"Trip details provided: {request.distance}mi, {request.duration}min")
         
         # Calculate estimate using segment analysis
-        estimate = calculate_segment_estimate(segment_dimensions, trip_details)
+        estimate = await calculate_segment_estimate(segment_dimensions, trip_details)
         
         # Build response
         return OrderEstimateResponse(
@@ -284,7 +284,7 @@ async def create_order(order: OrderCreate):
             logger.info(f"Trip details: {order.distance}mi, {order.duration}min")
         
         # Calculate estimates using segment analysis
-        estimate = calculate_segment_estimate(segment_dimensions, trip_details)
+        estimate = await calculate_segment_estimate(segment_dimensions, trip_details)
         
         # Generate unique order ID
         order_id = str(uuid.uuid4())
