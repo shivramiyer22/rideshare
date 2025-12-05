@@ -27,7 +27,7 @@ from app.pricing_engine import PricingEngine
 logger = logging.getLogger(__name__)
 
 
-def analyze_segment_historical_data(
+async def analyze_segment_historical_data(
     location_category: str,
     loyalty_tier: str,
     vehicle_type: str,
@@ -58,7 +58,7 @@ def analyze_segment_historical_data(
     try:
         # Get MongoDB database
         database = get_database()
-        if not database:
+        if database is None:
             logger.warning("Database not available for segment analysis")
             return {
                 "segment_avg_fcs_unit_price": 0.0,
@@ -83,7 +83,7 @@ def analyze_segment_historical_data(
         
         # Query historical rides
         cursor = collection.find(query_filter).limit(1000)
-        rides = list(cursor)
+        rides = await cursor.to_list(length=1000)
         
         if not rides or len(rides) == 0:
             logger.info(f"No historical data found for segment: {location_category}/{loyalty_tier}/{vehicle_type}/{pricing_model}")
@@ -172,7 +172,7 @@ def analyze_segment_historical_data(
         }
 
 
-def get_segment_forecast_data(
+async def get_segment_forecast_data(
     location_category: str,
     loyalty_tier: str,
     vehicle_type: str,
@@ -180,12 +180,17 @@ def get_segment_forecast_data(
     periods: int = 30
 ) -> Dict[str, Any]:
     """
-    Query forecasting data for segment predictions.
+    Query forecasting data for segment predictions - HWCO ONLY.
     
-    This function retrieves forecast predictions from the pricing_strategies collection
-    (where pipeline results are stored) or returns conservative estimates if no forecast available.
+    This function retrieves HWCO forecast predictions from per_segment_impacts
+    stored in pricing_strategies collection (where recommendation pipeline results are stored).
     
-    Think of this as "what we expect similar rides to cost in the next 30 days".
+    **CRITICAL:** This returns HWCO company forecasts ONLY. It does NOT use:
+    - Lyft competitor forecast data
+    - Any recommendation-adjusted forecasts
+    - Historical data is used as fallback only if no HWCO forecast exists
+    
+    Think of this as "what we forecast for HWCO rides in the next 30 days".
     
     Args:
         location_category: "Urban", "Suburban", or "Rural"
@@ -196,14 +201,16 @@ def get_segment_forecast_data(
     
     Returns:
         Dictionary with:
-        - predicted_price_30d: Forecasted average price for next 30 days
-        - predicted_demand_30d: Forecasted ride count for next 30 days
+        - predicted_unit_price_30d: Forecasted HWCO average price per minute for next 30 days
+        - predicted_ride_duration_30d: Forecasted HWCO ride duration
+        - predicted_demand_30d: Forecasted HWCO ride count for next 30 days
         - forecast_confidence: Confidence score (0-1) or None if unavailable
+        - data_source: "hwco_forecast" or "fallback_historical"
     """
     try:
         # Get MongoDB database
         database = get_database()
-        if not database:
+        if database is None:
             logger.warning("Database not available for forecast data")
             return {
                 "predicted_unit_price_30d": 0.0,
@@ -212,19 +219,20 @@ def get_segment_forecast_data(
                 "predicted_riders_30d": 0.0,
                 "predicted_drivers_30d": 0.0,
                 "segment_demand_profile": "MEDIUM",
-                "forecast_confidence": None
+                "forecast_confidence": None,
+                "data_source": "unavailable"
             }
         
         collection = database["pricing_strategies"]
         
-        # Query for latest forecast results (stored by pipeline)
-        pipeline_result = collection.find_one(
-            {"type": "pipeline_result"},
+        # Query for latest per_segment_impacts (HWCO forecasts from recommendation pipeline)
+        latest_strategy = await collection.find_one(
+            {"per_segment_impacts": {"$exists": True}},
             sort=[("timestamp", -1)]
         )
         
-        if not pipeline_result or "forecasts" not in pipeline_result:
-            logger.info("No forecast data available, using conservative estimates")
+        if not latest_strategy or "per_segment_impacts" not in latest_strategy:
+            logger.info("No HWCO forecast data available in per_segment_impacts, will use historical as fallback")
             return {
                 "predicted_unit_price_30d": 0.0,
                 "predicted_ride_duration_30d": 0.0,
@@ -232,50 +240,47 @@ def get_segment_forecast_data(
                 "predicted_riders_30d": 0.0,
                 "predicted_drivers_30d": 0.0,
                 "segment_demand_profile": "MEDIUM",
-                "forecast_confidence": None
+                "forecast_confidence": None,
+                "data_source": "fallback_historical"
             }
         
-        # Extract forecasts
-        forecasts_data = pipeline_result.get("forecasts", {})
-        segmented_forecasts = forecasts_data.get("segmented_forecasts", [])
+        # Extract per_segment_impacts (contains HWCO forecasts for all recommendations)
+        per_segment_impacts = latest_strategy.get("per_segment_impacts", {})
         
-        # Find matching segment (case-insensitive)
-        for segment in segmented_forecasts:
-            dims = segment.get("dimensions", {})
-            if (dims.get("location", "").lower() == location_category.lower() and
-                dims.get("loyalty_tier", "").lower() == loyalty_tier.lower() and
-                dims.get("vehicle_type", "").lower() == vehicle_type.lower() and
-                dims.get("pricing_model", "").lower() == pricing_model.lower()):
+        # Search through all recommendations for matching segment
+        # We'll use the first recommendation's baseline forecast (not the recommendation-adjusted values)
+        for rec_key, segments in per_segment_impacts.items():
+            if not isinstance(segments, list):
+                continue
+            
+            for segment_impact in segments:
+                segment_dims = segment_impact.get("segment", {})
                 
-                # Extract 30-day forecast with NEW field names
-                forecast_30d = segment.get("forecast_30d", {})
-                baseline = segment.get("baseline_metrics", {})
-                dims_segment = segment.get("dimensions", {})
-                
-                return {
-                    "predicted_unit_price_30d": round(forecast_30d.get("predicted_unit_price", baseline.get("segment_avg_fcs_unit_price", 0.0)), 4),
-                    "predicted_ride_duration_30d": round(forecast_30d.get("predicted_duration", baseline.get("segment_avg_fcs_ride_duration", 0.0)), 2),
-                    "predicted_demand_30d": round(forecast_30d.get("predicted_rides", 0.0), 2),
-                    "predicted_riders_30d": round(baseline.get("segment_avg_riders_per_order", 1.0), 2),
-                    "predicted_drivers_30d": round(baseline.get("segment_avg_drivers_per_order", 0.5), 2),
-                    "segment_demand_profile": dims_segment.get("demand_profile", "MEDIUM"),
-                    "forecast_confidence": 0.8  # Default confidence
-                }
+                # Match segment dimensions (case-insensitive)
+                if (segment_dims.get("location_category", "").lower() == location_category.lower() and
+                    segment_dims.get("loyalty_tier", "").lower() == loyalty_tier.lower() and
+                    segment_dims.get("vehicle_type", "").lower() == vehicle_type.lower() and
+                    segment_dims.get("pricing_model", "").lower() == pricing_model.lower()):
+                    
+                    # Use baseline data (HWCO forecast WITHOUT recommendations applied)
+                    baseline = segment_impact.get("baseline", {})
+                    
+                    if baseline:
+                        logger.info(f"Found HWCO forecast for segment {location_category}/{loyalty_tier}/{vehicle_type}/{pricing_model}")
+                        
+                        return {
+                            "predicted_unit_price_30d": round(baseline.get("unit_price_per_minute", 0.0), 4),
+                            "predicted_ride_duration_30d": round(baseline.get("ride_duration_minutes", 0.0), 2),
+                            "predicted_demand_30d": round(baseline.get("rides_30d", 0.0), 2),
+                            "predicted_riders_30d": 0.0,  # Not stored in per_segment_impacts
+                            "predicted_drivers_30d": 0.0,  # Not stored in per_segment_impacts
+                            "segment_demand_profile": segment_dims.get("demand_profile", "MEDIUM"),
+                            "forecast_confidence": 0.85,  # High confidence from HWCO forecast
+                            "data_source": "hwco_forecast"
+                        }
         
-        # No matching segment found
-        logger.info(f"No forecast found for segment: {location_category}/{loyalty_tier}/{vehicle_type}/{pricing_model}")
-        return {
-            "predicted_unit_price_30d": 0.0,
-            "predicted_ride_duration_30d": 0.0,
-            "predicted_demand_30d": 0.0,
-            "predicted_riders_30d": 0.0,
-            "predicted_drivers_30d": 0.0,
-            "segment_demand_profile": "MEDIUM",
-            "forecast_confidence": None
-        }
-    
-    except Exception as e:
-        logger.error(f"Error getting segment forecast data: {e}")
+        # No matching HWCO forecast found - will fallback to historical
+        logger.info(f"No HWCO forecast found for segment: {location_category}/{loyalty_tier}/{vehicle_type}/{pricing_model}, will use historical as fallback")
         return {
             "predicted_unit_price_30d": 0.0,
             "predicted_ride_duration_30d": 0.0,
@@ -284,11 +289,25 @@ def get_segment_forecast_data(
             "predicted_drivers_30d": 0.0,
             "segment_demand_profile": "MEDIUM",
             "forecast_confidence": None,
+            "data_source": "fallback_historical"
+        }
+    
+    except Exception as e:
+        logger.error(f"Error getting HWCO segment forecast data: {e}")
+        return {
+            "predicted_unit_price_30d": 0.0,
+            "predicted_ride_duration_30d": 0.0,
+            "predicted_demand_30d": 0.0,
+            "predicted_riders_30d": 0.0,
+            "predicted_drivers_30d": 0.0,
+            "segment_demand_profile": "MEDIUM",
+            "forecast_confidence": None,
+            "data_source": "error",
             "error": str(e)
         }
 
 
-def calculate_segment_estimate(
+async def calculate_segment_estimate(
     segment_dimensions: Dict[str, str],
     trip_details: Optional[Dict[str, float]] = None
 ) -> Dict[str, Any]:
@@ -330,12 +349,12 @@ def calculate_segment_estimate(
         logger.info(f"Calculating estimate for segment: {location_category}/{loyalty_tier}/{vehicle_type}/{pricing_model}")
         
         # 1. Get historical baseline
-        historical = analyze_segment_historical_data(
+        historical = await analyze_segment_historical_data(
             location_category, loyalty_tier, vehicle_type, pricing_model
         )
         
         # 2. Get forecast prediction
-        forecast = get_segment_forecast_data(
+        forecast = await get_segment_forecast_data(
             location_category, loyalty_tier, vehicle_type, pricing_model
         )
         
@@ -389,44 +408,53 @@ def calculate_segment_estimate(
                 explanation_parts.append(f"Using segment average: ${unit_price:.4f}/min × {duration:.1f} min = ${estimated_price:.2f}")
                 assumptions.append("PricingEngine unavailable, using historical average")
         
-        # Case B: No trip details - use segment average
+        # Case B: No trip details - PRIORITIZE HWCO FORECAST over historical
         else:
-            # Calculate from NEW duration/unit_price model
-            unit_price = historical["segment_avg_fcs_unit_price"]
-            duration = historical["segment_avg_fcs_ride_duration"]
-            estimated_price = unit_price * duration if unit_price > 0 and duration > 0 else 0.0
+            # Priority 1: Use HWCO forecast data if available (forward-looking)
+            forecast_unit_price = forecast["predicted_unit_price_30d"]
+            forecast_duration = forecast["predicted_ride_duration_30d"]
+            data_source = forecast.get("data_source", "fallback_historical")
             
-            if estimated_price > 0:
-                explanation_parts.append(f"Segment average from {historical['sample_size']} historical rides: ${unit_price:.4f}/min × {duration:.1f} min = ${estimated_price:.2f}")
+            if forecast_unit_price > 0 and forecast_duration > 0 and data_source == "hwco_forecast":
+                # HWCO forecast available - use it (priority over historical)
+                estimated_price = forecast_unit_price * forecast_duration
+                explanation_parts.append(f"HWCO forecast (30d): ${forecast_unit_price:.4f}/min × {forecast_duration:.1f} min = ${estimated_price:.2f}")
+                explanation_parts.append(f"Expected {forecast['predicted_demand_30d']:.0f} HWCO rides in next 30 days")
+                assumptions.append("Using HWCO forward-looking forecast (preferred over historical)")
+                logger.info(f"Using HWCO forecast for pricing: ${estimated_price:.2f}")
             else:
-                # No historical data - use forecast or conservative estimate
-                forecast_unit_price = forecast["predicted_unit_price_30d"]
-                forecast_duration = forecast["predicted_ride_duration_30d"]
-                if forecast_unit_price > 0 and forecast_duration > 0:
-                    estimated_price = forecast_unit_price * forecast_duration
-                    explanation_parts.append(f"Using forecasted price (no historical data): ${forecast_unit_price:.4f}/min × {forecast_duration:.1f} min = ${estimated_price:.2f}")
-                    assumptions.append("Limited historical data, using forecast prediction")
+                # Fallback to historical data
+                unit_price = historical["segment_avg_fcs_unit_price"]
+                duration = historical["segment_avg_fcs_ride_duration"]
+                estimated_price = unit_price * duration if unit_price > 0 and duration > 0 else 0.0
+                
+                if estimated_price > 0:
+                    explanation_parts.append(f"Historical average from {historical['sample_size']} past rides: ${unit_price:.4f}/min × {duration:.1f} min = ${estimated_price:.2f}")
+                    assumptions.append("Using historical data as fallback (no HWCO forecast available)")
+                    logger.info(f"Using historical fallback for pricing: ${estimated_price:.2f}")
                 else:
-                    estimated_price = 15.0  # Conservative default
-                    explanation_parts.append(f"Using conservative default estimate: ${estimated_price:.2f}")
-                    assumptions.append("No historical or forecast data available")
+                    # Last resort: conservative estimate
+                    estimated_price = 15.0
+                    explanation_parts.append(f"Conservative default estimate: ${estimated_price:.2f}")
+                    assumptions.append("No HWCO forecast or historical data available")
+                    logger.warning(f"Using conservative fallback for segment {location_category}/{loyalty_tier}/{vehicle_type}/{pricing_model}")
         
-        # Add forecast context
-        forecast_unit_price = forecast["predicted_unit_price_30d"]
-        forecast_duration = forecast["predicted_ride_duration_30d"]
-        if forecast_unit_price > 0 and forecast_duration > 0:
-            forecast_price = forecast_unit_price * forecast_duration
-            explanation_parts.append(f"30-day forecast: ${forecast_price:.2f} per ride ({forecast_unit_price:.4f}/min × {forecast_duration:.1f} min), {forecast['predicted_demand_30d']:.0f} rides expected")
+        # Add context about data sources
+        if forecast.get("data_source") == "hwco_forecast":
+            explanation_parts.append(f"Data source: HWCO forecast (confidence: {forecast['forecast_confidence']*100:.0f}%)")
+        elif historical["sample_size"] > 0:
+            explanation_parts.append(f"Data source: {historical['sample_size']} historical rides")
         
         # Add segment context
         explanation_parts.append(f"Segment: {location_category} / {loyalty_tier} / {vehicle_type} / {pricing_model}")
         
         # Build assumptions
-        if historical["sample_size"] > 0:
+        if forecast.get("data_source") == "hwco_forecast":
+            assumptions.append(f"HWCO forecast confidence: {forecast['forecast_confidence']*100:.0f}%")
+        if historical["sample_size"] > 0 and forecast.get("data_source") != "hwco_forecast":
             assumptions.append(f"Historical data from {historical['sample_size']} similar rides")
-        if forecast["forecast_confidence"]:
-            assumptions.append(f"Forecast confidence: {forecast['forecast_confidence']*100:.0f}%")
         assumptions.append("Prices may vary based on real-time demand, traffic, and events")
+        assumptions.append("Excludes Lyft competitor data and recommendations")
         
         # Combine explanation
         explanation = " | ".join(explanation_parts)

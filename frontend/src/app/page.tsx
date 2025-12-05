@@ -57,7 +57,7 @@ export default function Home() {
           </main>
 
           {/* AI Assistant Panel */}
-          <AIPanel />
+          <AIPanel activeTab={activeTab} />
         </div>
       </div>
     </div>

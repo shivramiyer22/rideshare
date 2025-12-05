@@ -200,43 +200,42 @@ export function OverviewTab() {
             <div className="flex items-center gap-8">
               {/* Donut Chart */}
               <div className="flex-shrink-0">
-                <ResponsiveContainer width={220} height={220}>
-                  <PieChart>
-                    <defs>
-                      <linearGradient id="goldGradient" x1="0" y1="0" x2="1" y2="1">
-                        <stop offset="0%" stopColor="#2E3C49" />
-                        <stop offset="50%" stopColor="#3E4C59" />
-                        <stop offset="100%" stopColor="#4E5C69" />
-                      </linearGradient>
-                      <linearGradient id="silverGradient" x1="0" y1="0" x2="1" y2="1">
-                        <stop offset="0%" stopColor="#4B6C89" />
-                        <stop offset="50%" stopColor="#5B7C99" />
-                        <stop offset="100%" stopColor="#6B8CA9" />
-                      </linearGradient>
-                      <linearGradient id="bronzeGradient" x1="0" y1="0" x2="1" y2="1">
-                        <stop offset="0%" stopColor="#609D37" />
-                        <stop offset="50%" stopColor="#70AD47" />
-                        <stop offset="100%" stopColor="#80BD57" />
-                      </linearGradient>
-                    </defs>
-                    <Pie
-                      data={customerDistribution}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={60}
-                      outerRadius={90}
-                      fill="#8884d8"
-                      dataKey="value"
-                      label={false}
-                    >
-                      {customerDistribution.map((entry, index) => {
-                        const gradientMap: { [key: string]: string } = {
-                          'Gold': 'url(#goldGradient)',
-                          'Silver': 'url(#silverGradient)',
-                          'Bronze': 'url(#bronzeGradient)'
-                        };
-                        return (
-                          <Cell 
+                <PieChart width={220} height={220}>
+                  <defs>
+                    <linearGradient id="goldGradient" x1="0" y1="0" x2="1" y2="1">
+                      <stop offset="0%" stopColor="#2E3C49" />
+                      <stop offset="50%" stopColor="#3E4C59" />
+                      <stop offset="100%" stopColor="#4E5C69" />
+                    </linearGradient>
+                    <linearGradient id="silverGradient" x1="0" y1="0" x2="1" y2="1">
+                      <stop offset="0%" stopColor="#4B6C89" />
+                      <stop offset="50%" stopColor="#5B7C99" />
+                      <stop offset="100%" stopColor="#6B8CA9" />
+                    </linearGradient>
+                    <linearGradient id="bronzeGradient" x1="0" y1="0" x2="1" y2="1">
+                      <stop offset="0%" stopColor="#609D37" />
+                      <stop offset="50%" stopColor="#70AD47" />
+                      <stop offset="100%" stopColor="#80BD57" />
+                    </linearGradient>
+                  </defs>
+                  <Pie
+                    data={customerDistribution}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={60}
+                    outerRadius={90}
+                    fill="#8884d8"
+                    dataKey="value"
+                    label={false}
+                  >
+                    {customerDistribution.map((entry, index) => {
+                      const gradientMap: { [key: string]: string } = {
+                        'Gold': 'url(#goldGradient)',
+                        'Silver': 'url(#silverGradient)',
+                        'Bronze': 'url(#bronzeGradient)'
+                      };
+                      return (
+                        <Cell 
                             key={`cell-${index}`} 
                             fill={gradientMap[entry.name] || entry.color}
                             style={{ filter: 'drop-shadow(0px 2px 4px rgba(0,0,0,0.2))' }}
@@ -261,7 +260,6 @@ export function OverviewTab() {
                       }}
                     />
                   </PieChart>
-                </ResponsiveContainer>
               </div>
 
               {/* Legend on the side */}

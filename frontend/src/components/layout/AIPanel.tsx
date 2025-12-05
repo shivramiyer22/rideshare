@@ -11,11 +11,30 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { useChatbot } from '@/hooks/useChatbot';
 import { cn } from '@/lib/utils';
+import { TabType } from './Sidebar';
 
-export function AIPanel() {
+interface AIPanelProps {
+  activeTab: TabType;
+}
+
+export function AIPanel({ activeTab }: AIPanelProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [inputValue, setInputValue] = useState('');
-  const { messages, isConnected, isTyping, sendMessage, clearMessages, threadId } = useChatbot();
+  
+  // Map tab names to readable page names
+  const pageNames: Record<TabType, string> = {
+    overview: 'Overview Dashboard',
+    pricing: 'Pricing Analysis',
+    forecasting: 'Demand Forecasting',
+    market: 'Market Signals',
+    elasticity: 'Price Elasticity',
+    upload: 'Data Upload'
+  };
+  
+  const { messages, isConnected, isTyping, sendMessage, clearMessages, threadId } = useChatbot({
+    currentPage: pageNames[activeTab],
+    pageData: { tab: activeTab }
+  });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   
   // Resize functionality
@@ -83,9 +102,7 @@ export function AIPanel() {
   };
 
   const handleClearChat = () => {
-    if (confirm('Are you sure you want to clear the chat history?')) {
-      clearMessages();
-    }
+    clearMessages();
   };
 
   return (
@@ -155,10 +172,21 @@ export function AIPanel() {
         {/* Chat Messages */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {messages.length === 0 ? (
-            <div className="text-center text-sm text-muted-foreground py-8">
-              <MessageSquare size={32} className="mx-auto mb-2 opacity-50" />
-              <p>Ask me anything about pricing,</p>
-              <p>forecasting, or analytics!</p>
+            <div className="text-center text-sm text-muted-foreground py-8 px-4">
+              <MessageSquare size={32} className="mx-auto mb-4 opacity-50" />
+              <div className="space-y-3 text-left max-w-md mx-auto">
+                <p className="font-semibold text-base">👋 Welcome! I'm your AI Assistant</p>
+                <p className="text-xs">I can help you with:</p>
+                <ul className="text-xs space-y-1.5 pl-4">
+                  <li>📊 Business objectives & progress tracking</li>
+                  <li>💰 Revenue, pricing & profitability analysis</li>
+                  <li>📈 Demand forecasting & trends</li>
+                  <li>🏆 HWCO vs Lyft competitor comparisons</li>
+                  <li>📍 Location, customer & segment insights</li>
+                  <li>🎯 Strategic recommendations</li>
+                </ul>
+                <p className="text-xs pt-2 italic">Ask me anything about your rideshare business!</p>
+              </div>
             </div>
           ) : (
             messages.map((message) => (
@@ -171,7 +199,15 @@ export function AIPanel() {
                     : 'bg-muted mr-4'
                 )}
               >
-                <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                <div 
+                  className="text-sm whitespace-pre-wrap break-words prose prose-sm max-w-none dark:prose-invert"
+                  style={{ 
+                    wordBreak: 'break-word',
+                    overflowWrap: 'break-word'
+                  }}
+                >
+                  {message.content}
+                </div>
                 {message.agent && (
                   <p className="text-xs opacity-70 mt-1">via {message.agent}</p>
                 )}

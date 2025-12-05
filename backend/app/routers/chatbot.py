@@ -11,11 +11,12 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Qu
 from fastapi.responses import StreamingResponse
 from typing import Dict, Any, List, Optional, AsyncGenerator
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import logging
 import json
 import asyncio
+import hashlib
 from app.agents.orchestrator import orchestrator_agent
 from app.database import get_database
 from langgraph.checkpoint.memory import InMemorySaver
@@ -27,6 +28,40 @@ logger = logging.getLogger(__name__)
 # Use checkpointer for conversation context (memory)
 # This allows the orchestrator to remember previous messages in the conversation
 checkpointer = InMemorySaver()
+
+# Simple response cache for common queries (expires after 5 minutes)
+response_cache: Dict[str, tuple[str, datetime]] = {}
+CACHE_TTL_SECONDS = 300  # 5 minutes
+
+
+def clean_response_formatting(text: str) -> str:
+    """
+    Clean up response formatting to ensure consistency.
+    - Replace ### with ## (no sub-headers)
+    - Ensure consistent bullet points
+    - Remove numbered lists
+    """
+    import re
+    
+    # Replace ### with ## (no sub-headers allowed)
+    text = re.sub(r'^###\s+', '## ', text, flags=re.MULTILINE)
+    
+    # Replace numbered lists with bullet points
+    text = re.sub(r'^\d+\.\s+', '• ', text, flags=re.MULTILINE)
+    
+    # Ensure consistent spacing after headers
+    text = re.sub(r'^##\s+([^\n]+)\n(?!\n)', r'## \1\n\n', text, flags=re.MULTILINE)
+    
+    return text.strip()
+
+
+@router.post("/clear-cache")
+async def clear_cache():
+    """Clear the chatbot response cache."""
+    global response_cache
+    cache_size = len(response_cache)
+    response_cache.clear()
+    return {"success": True, "cleared": cache_size, "message": f"Cleared {cache_size} cached responses"}
 
 
 async def save_chat_message(user_id: str, thread_id: str, role: str, content: str):
@@ -55,6 +90,62 @@ async def save_chat_message(user_id: str, thread_id: str, role: str, content: st
         logger.warning(f"Could not save chat message (chatbot will continue): {e}")
 
 
+def clean_response_formatting(response: str) -> str:
+    """
+    Clean and enforce consistent response formatting.
+    - Convert ### to ##
+    - Convert ## with numbers (## 1. or ## 2.) to bullet points
+    - Ensure proper spacing
+    - Remove excessive blank lines
+    """
+    import re
+    
+    # Replace ### with ## (no sub-headers)
+    response = re.sub(r'^###\s+', '## ', response, flags=re.MULTILINE)
+    
+    # Replace numbered sub-headers like "## 1. Title" with "• **Title**"
+    response = re.sub(r'^##\s+\d+\.\s+\*\*(.+?)\*\*', r'• **\1**', response, flags=re.MULTILINE)
+    response = re.sub(r'^##\s+\d+\.\s+(.+?)$', r'• **\1**', response, flags=re.MULTILINE)
+    
+    # Ensure single blank line between sections (no more than 2 consecutive newlines)
+    response = re.sub(r'\n{3,}', '\n\n', response)
+    
+    # Remove trailing whitespace from lines
+    response = '\n'.join(line.rstrip() for line in response.split('\n'))
+    
+    # Remove leading/trailing blank lines
+    response = response.strip()
+    
+    return response
+
+
+def clean_response_formatting(response: str) -> str:
+    """
+    Clean and enforce consistent formatting in agent responses.
+    
+    Rules:
+    - Convert ### to ##
+    - Ensure blank line after headers
+    - Remove extra blank lines
+    - Ensure consistent bullet points
+    """
+    import re
+    
+    # Replace ### with ##
+    response = re.sub(r'^###\s+', '## ', response, flags=re.MULTILINE)
+    
+    # Ensure ONE blank line after headers (## Header)
+    response = re.sub(r'(^##\s+.+)$(?!\n\n)', r'\1\n', response, flags=re.MULTILINE)
+    
+    # Remove more than 2 consecutive newlines
+    response = re.sub(r'\n{3,}', '\n\n', response)
+    
+    # Ensure bullet points use • consistently
+    response = re.sub(r'^[\s]*[-*]\s+', '• ', response, flags=re.MULTILINE)
+    
+    return response.strip()
+
+
 class ChatMessage(BaseModel):
     """Chat message model."""
     message: str
@@ -70,7 +161,7 @@ class ChatResponse(BaseModel):
 @router.post("/chat", response_model=ChatResponse)
 async def chat(message: ChatMessage) -> ChatResponse:
     """
-    Handle chatbot conversation.
+    Handle chatbot conversation with response caching for common queries.
     
     Args:
         message: User message and context
@@ -78,6 +169,20 @@ async def chat(message: ChatMessage) -> ChatResponse:
     Returns:
         ChatResponse: Bot response
     """
+    # Check cache for common queries
+    cache_key = hashlib.md5(message.message.lower().strip().encode()).hexdigest()
+    if cache_key in response_cache:
+        cached_response, cached_time = response_cache[cache_key]
+        age_seconds = (datetime.utcnow() - cached_time).total_seconds()
+        if age_seconds < CACHE_TTL_SECONDS:
+            logger.info(f"Cache HIT for query (age: {age_seconds:.1f}s)")
+            return ChatResponse(
+                response=f"{cached_response}\n\n_Note: Cached response ({int(age_seconds)}s old)_",
+                context=message.context
+            )
+        else:
+            # Expired cache entry
+            del response_cache[cache_key]
     try:
         # Check if orchestrator agent is initialized
         if orchestrator_agent is None:
@@ -87,10 +192,15 @@ async def chat(message: ChatMessage) -> ChatResponse:
             )
         
         # Generate a unique thread_id for this conversation
-        # For HTTP endpoint, we create a new thread per request
         # If you want conversation continuity, the client should pass thread_id in context
         thread_id = message.context.get("thread_id", f"http_chat_{int(time.time() * 1000)}")
         user_id = message.context.get("user_id", "anonymous")
+        current_page = message.context.get("current_page", "unknown")
+        
+        # Enhance message with page context
+        enhanced_message = message.message
+        if current_page and current_page != "unknown":
+            enhanced_message = f"[User is viewing: {current_page}]\n\n{message.message}"
         
         # Create config with thread_id for checkpointer (conversation memory)
         config = {"configurable": {"thread_id": thread_id}}
@@ -100,11 +210,18 @@ async def chat(message: ChatMessage) -> ChatResponse:
         
         # Use orchestrator agent to handle the conversation
         result = orchestrator_agent.invoke(
-            {"messages": [{"role": "user", "content": message.message}]},
+            {"messages": [{"role": "user", "content": enhanced_message}]},
             config
         )
         
         response_text = result["messages"][-1].content if result.get("messages") else "I'm sorry, I couldn't process that."
+        
+        # Clean and enforce consistent formatting
+        response_text = clean_response_formatting(response_text)
+        
+        # Cache the response for common queries
+        response_cache[cache_key] = (response_text, datetime.utcnow())
+        logger.info(f"Cached response for query (cache size: {len(response_cache)})")
         
         # Save assistant response to history
         await save_chat_message(user_id, thread_id, "assistant", response_text)
@@ -153,6 +270,12 @@ async def chat_stream(message: ChatMessage):
         
         thread_id = message.context.get("thread_id", f"http_chat_{int(time.time() * 1000)}")
         user_id = message.context.get("user_id", "anonymous")
+        current_page = message.context.get("current_page", "unknown")
+        
+        # Enhance message with page context
+        enhanced_message = message.message
+        if current_page and current_page != "unknown":
+            enhanced_message = f"[User is viewing: {current_page}]\n\n{message.message}"
         
         # Save user message to history
         await save_chat_message(user_id, thread_id, "user", message.message)
@@ -165,7 +288,7 @@ async def chat_stream(message: ChatMessage):
                 
                 # Use agent's stream method for token-by-token generation
                 async for chunk in orchestrator_agent.astream(
-                    {"messages": [{"role": "user", "content": message.message}]},
+                    {"messages": [{"role": "user", "content": enhanced_message}]},
                     config
                 ):
                     # Extract content from the chunk
@@ -194,7 +317,7 @@ async def chat_stream(message: ChatMessage):
                 if not full_response:
                     # Get the final result
                     result = orchestrator_agent.invoke(
-                        {"messages": [{"role": "user", "content": message.message}]},
+                        {"messages": [{"role": "user", "content": enhanced_message}]},
                         config
                     )
                     full_response = result["messages"][-1].content if result.get("messages") else "I'm sorry, I couldn't process that."
@@ -205,6 +328,12 @@ async def chat_stream(message: ChatMessage):
                         token = word if i == 0 else f" {word}"
                         yield f"data: {json.dumps({'token': token, 'done': False})}\n\n"
                         await asyncio.sleep(0.02)  # Reduced delay for faster streaming
+                
+                # Clean and enforce consistent formatting
+                full_response = clean_response_formatting(full_response)
+                
+                # Clean and enforce consistent formatting
+                full_response = clean_response_formatting(full_response)
                 
                 # Save assistant response to history
                 await save_chat_message(user_id, thread_id, "assistant", full_response)
