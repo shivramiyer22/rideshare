@@ -411,6 +411,7 @@ def generate_multidimensional_forecast(periods: int = 30) -> str:
                             
                             ride_count = len(segment_rides)
                             
+                            # ALWAYS generate forecast for ALL 162 segments (even with zero data)
                             if ride_count >= 3:
                                 # Sufficient data for segment-specific forecast
                                 # Build segment dimensions
@@ -659,6 +660,106 @@ def generate_multidimensional_forecast(periods: int = 30) -> str:
                                         "data_quality": "aggregated",
                                         "forecast_method": "simple_aggregated"
                                     })
+                            
+                            else:
+                                # NO DATA for this segment - use industry defaults/fallbacks
+                                # This ensures ALL 162 segments are always generated
+                                segment_dims = {
+                                    "loyalty_tier": loyalty,
+                                    "vehicle_type": vehicle,
+                                    "demand_profile": demand,
+                                    "pricing_model": pricing,
+                                    "location": location
+                                }
+                                
+                                # Industry baseline defaults (conservative estimates)
+                                # Based on typical rideshare segment performance
+                                default_unit_price = 0.35  # $0.35 per minute baseline
+                                default_duration = 20.0  # 20 minutes
+                                default_rides = 5.0  # 5 rides per month for new segments
+                                default_riders = 1.2
+                                default_drivers = 0.6
+                                
+                                # Adjust based on segment characteristics
+                                # Location adjustments
+                                if location == "Urban":
+                                    default_unit_price *= 1.15
+                                    default_rides *= 2.0  # Urban has more demand
+                                elif location == "Rural":
+                                    default_unit_price *= 0.85
+                                    default_rides *= 0.5  # Rural has less demand
+                                
+                                # Loyalty adjustments
+                                if loyalty == "Gold":
+                                    default_unit_price *= 0.95  # Gold gets discount
+                                    default_rides *= 1.3  # Gold rides more often
+                                elif loyalty == "Silver":
+                                    default_unit_price *= 0.98
+                                    default_rides *= 1.1
+                                
+                                # Vehicle adjustments
+                                if vehicle == "Premium":
+                                    default_unit_price *= 1.5
+                                    default_duration *= 1.1  # Premium rides slightly longer
+                                
+                                # Pricing model adjustments
+                                if pricing == "CONTRACTED":
+                                    default_unit_price *= 0.90  # Contracted gets bulk discount
+                                    default_rides *= 2.0  # Contracted rides more
+                                elif pricing == "CUSTOM":
+                                    default_unit_price *= 1.05
+                                
+                                # Demand profile adjustments
+                                if demand == "HIGH":
+                                    default_unit_price *= 1.2  # Surge pricing
+                                    default_rides *= 1.5
+                                    default_drivers *= 0.7  # High demand = fewer drivers
+                                elif demand == "LOW":
+                                    default_unit_price *= 0.9
+                                    default_rides *= 0.7
+                                    default_drivers *= 1.3  # Low demand = more drivers
+                                
+                                # Calculate revenue
+                                default_revenue = default_rides * default_unit_price * default_duration
+                                
+                                # Build fallback forecast with conservative growth
+                                aggregated_forecasts.append({
+                                    "dimensions": segment_dims,
+                                    "baseline_metrics": {
+                                        "historical_ride_count": 0,  # No historical data
+                                        "segment_avg_fcs_unit_price": round(default_unit_price, 4),
+                                        "segment_avg_fcs_ride_duration": round(default_duration, 2),
+                                        "segment_avg_riders_per_order": round(default_riders, 2),
+                                        "segment_avg_drivers_per_order": round(default_drivers, 2),
+                                        "segment_demand_profile": demand,
+                                        "total_revenue": round(default_revenue, 2),
+                                        "avg_monthly_demand": round(default_rides, 2)
+                                    },
+                                    "forecast_30d": {
+                                        "predicted_rides": round(default_rides * 1.02, 2),  # 2% growth
+                                        "predicted_unit_price": round(default_unit_price, 4),
+                                        "predicted_ride_duration": round(default_duration, 2),
+                                        "predicted_revenue": round(default_rides * 1.02 * default_unit_price * default_duration, 2),
+                                        "segment_demand_profile": demand
+                                    },
+                                    "forecast_60d": {
+                                        "predicted_rides": round(default_rides * 1.04, 2),  # 4% growth
+                                        "predicted_unit_price": round(default_unit_price, 4),
+                                        "predicted_ride_duration": round(default_duration, 2),
+                                        "predicted_revenue": round(default_rides * 1.04 * default_unit_price * default_duration, 2),
+                                        "segment_demand_profile": demand
+                                    },
+                                    "forecast_90d": {
+                                        "predicted_rides": round(default_rides * 1.06, 2),  # 6% growth
+                                        "predicted_unit_price": round(default_unit_price, 4),
+                                        "predicted_ride_duration": round(default_duration, 2),
+                                        "predicted_revenue": round(default_rides * 1.06 * default_unit_price * default_duration, 2),
+                                        "segment_demand_profile": demand
+                                    },
+                                    "confidence": "very_low",
+                                    "data_quality": "fallback_defaults",
+                                    "forecast_method": "industry_defaults"
+                                })
         
         client.close()
         
@@ -667,7 +768,8 @@ def generate_multidimensional_forecast(periods: int = 30) -> str:
         confidence_distribution = {
             "high": sum(1 for f in segmented_forecasts if f["confidence"] == "high"),
             "medium": sum(1 for f in segmented_forecasts if f["confidence"] == "medium"),
-            "low": len(aggregated_forecasts)
+            "low": sum(1 for f in aggregated_forecasts if f.get("confidence") == "low"),
+            "very_low": sum(1 for f in aggregated_forecasts if f.get("confidence") == "very_low")
         }
         
         # Calculate totals
@@ -953,48 +1055,29 @@ try:
             explain_forecast
         ],
         system_prompt=(
-            "You are a forecasting specialist. "
-            "Your role is to predict future demand, analyze trends, "
-            "and provide accurate forecasts using Prophet ML models and external data. "
-            "\n\n"
-            "IMPORTANT TOOL SELECTION: "
-            "- For MULTI-DIMENSIONAL forecasts: use generate_multidimensional_forecast (648 segments) "
-            "- For ACTUAL historical demand patterns: use get_historical_demand_data "
-            "- For ACTUAL upcoming events: use get_upcoming_events "
-            "- For ACTUAL traffic conditions: use get_traffic_conditions "
-            "- For ACTUAL industry news: use get_industry_news "
-            "- For RAG-based event search: use query_event_context "
-            "- For single pricing model ML forecasts: use generate_prophet_forecast "
-            "- For explanations: use explain_forecast "
-            "\n\n"
-            "Key responsibilities: "
-            "- Generate multi-dimensional forecasts across ALL customer segments "
-            "- Generate 30/60/90-day demand forecasts using Prophet ML "
-            "- Query ACTUAL data from MongoDB (events, traffic, news) "
-            "- Explain forecasts in natural language using OpenAI GPT-4 "
-            "- Provide confidence intervals and trend analysis "
-            "\n\n"
-            "When generating forecasts: "
-            "1. For comprehensive analysis: use generate_multidimensional_forecast "
-            "2. First query actual data: get_upcoming_events, get_traffic_conditions "
-            "3. Use get_historical_demand_data to understand past patterns "
-            "4. Use generate_prophet_forecast for specific pricing model ML predictions "
-            "5. Use explain_forecast to provide natural language explanations "
-            "6. Combine all data sources for comprehensive forecasts "
-            "\n\n"
-            "Multi-dimensional forecasts provide: "
-            "- 648 unique segment combinations "
-            "- Confidence levels (high/medium/low) based on data availability "
-            "- Separate forecasts for sparse segments using aggregation "
-            "- Baseline metrics and growth projections "
-            "\n\n"
-            "Return format should include: "
-            "- forecast: List of forecast points with predicted_demand, confidence intervals "
-            "- explanation: Natural language explanation from OpenAI GPT-4 "
-            "- method: 'prophet_ml' or 'multi_dimensional' "
-            "- context: {events_detected, traffic_patterns} from actual MongoDB data "
-            "\n\n"
-            "Always include ACTUAL data from MongoDB in your analysis, not just RAG results."
+            "You are a forecasting specialist predicting future demand using ML models and external data.\n\n"
+            
+            "🎯 TOOL SELECTION:\n"
+            "• Multi-dimensional → generate_multidimensional_forecast (648 segments)\n"
+            "• Historical patterns → get_historical_demand_data\n"
+            "• Upcoming events → get_upcoming_events\n"
+            "• Traffic → get_traffic_conditions\n"
+            "• Industry news → get_industry_news\n"
+            "• Single forecast → generate_prophet_forecast\n\n"
+            
+            "📋 RESPONSE FORMAT (STRICTLY FOLLOW):\n"
+            "• Use ## (two hashes) for headers with emojis\n"
+            "• Use bullet points (•) for ALL findings\n"
+            "• Keep under 120 words\n"
+            "• Bold key metrics: **+25% demand**, **95% confidence**\n"
+            "• Show trend direction clearly\n\n"
+            
+            "✅ CORRECT:\n"
+            "## 📈 30-Day Forecast\n"
+            "• Demand: **+15%** vs baseline\n"
+            "• Confidence: **95%**\n"
+            "• Peak days: **Fri-Sun**\n"
+            "• Driver: **Holiday events** (+20%)\n"
         ),
         name="forecasting_agent"
     )

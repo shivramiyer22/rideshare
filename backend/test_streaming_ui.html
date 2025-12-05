@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chatbot Streaming Test</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            font-weight: 500;
+        }
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .chat-container {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            height: 400px;
+            overflow-y: auto;
+            padding: 15px;
+            margin-bottom: 20px;
+            background: #fafafa;
+        }
+        .message {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .message.user {
+            background: #007bff;
+            color: white;
+            margin-left: 20%;
+        }
+        .message.assistant {
+            background: #e9ecef;
+            color: #333;
+            margin-right: 20%;
+        }
+        .input-container {
+            display: flex;
+            gap: 10px;
+        }
+        input {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        button {
+            padding: 12px 24px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        button:hover:not(:disabled) {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .typing {
+            font-style: italic;
+            color: #666;
+            padding: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 Streaming Chatbot Test</h1>
+        
+        <div class="status" id="status">
+            <span id="statusText">Checking connection...</span>
+        </div>
+
+        <div class="chat-container" id="chatContainer">
+            <p style="text-align: center; color: #999; margin-top: 150px;">
+                👋 Ask me anything about pricing, forecasting, or analytics!
+            </p>
+        </div>
+
+        <div class="input-container">
+            <input 
+                type="text" 
+                id="messageInput" 
+                placeholder="Type your message..." 
+                disabled
+            />
+            <button id="sendButton" disabled>Send</button>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:8000';
+        const statusEl = document.getElementById('status');
+        const statusTextEl = document.getElementById('statusText');
+        const chatContainer = document.getElementById('chatContainer');
+        const messageInput = document.getElementById('messageInput');
+        const sendButton = document.getElementById('sendButton');
+        
+        let isConnected = false;
+        let threadId = `test_${Date.now()}`;
+
+        // Check backend connection
+        async function checkConnection() {
+            try {
+                const response = await fetch(`${API_URL}/health`, { timeout: 5000 });
+                if (response.ok) {
+                    isConnected = true;
+                    statusEl.className = 'status connected';
+                    statusTextEl.textContent = '✅ Connected to backend';
+                    messageInput.disabled = false;
+                    sendButton.disabled = false;
+                } else {
+                    throw new Error('Backend not healthy');
+                }
+            } catch (error) {
+                isConnected = false;
+                statusEl.className = 'status disconnected';
+                statusTextEl.textContent = '❌ Disconnected from backend';
+                messageInput.disabled = true;
+                sendButton.disabled = true;
+            }
+        }
+
+        // Add message to chat
+        function addMessage(role, content) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+            messageDiv.textContent = content;
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        // Show typing indicator
+        function showTyping() {
+            const typingDiv = document.createElement('div');
+            typingDiv.className = 'typing';
+            typingDiv.id = 'typing';
+            typingDiv.textContent = '⋯ AI is typing...';
+            chatContainer.appendChild(typingDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        // Remove typing indicator
+        function removeTyping() {
+            const typingDiv = document.getElementById('typing');
+            if (typingDiv) typingDiv.remove();
+        }
+
+        // Send message with streaming
+        async function sendMessage() {
+            const message = messageInput.value.trim();
+            if (!message || !isConnected) return;
+
+            // Add user message
+            addMessage('user', message);
+            messageInput.value = '';
+            messageInput.disabled = true;
+            sendButton.disabled = true;
+
+            // Show typing indicator
+            showTyping();
+
+            try {
+                const response = await fetch(`${API_URL}/api/v1/chatbot/chat/stream`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        context: {
+                            thread_id: threadId,
+                            user_id: 'test_user'
+                        }
+                    }),
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                // Read the stream
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                let fullContent = '';
+                let assistantMessageDiv = null;
+
+                removeTyping();
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    
+                    if (done) break;
+
+                    // Decode the chunk
+                    const chunk = decoder.decode(value);
+                    
+                    // Parse SSE format (data: {...}\n\n)
+                    const lines = chunk.split('\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.substring(6));
+                                
+                                if (data.error) {
+                                    throw new Error(data.error);
+                                }
+                                
+                                if (data.token && !data.done) {
+                                    // Accumulate the token
+                                    fullContent += data.token;
+                                    
+                                    // Update or create message div
+                                    if (!assistantMessageDiv) {
+                                        assistantMessageDiv = document.createElement('div');
+                                        assistantMessageDiv.className = 'message assistant';
+                                        chatContainer.appendChild(assistantMessageDiv);
+                                    }
+                                    
+                                    assistantMessageDiv.textContent = fullContent;
+                                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                                }
+                                
+                                if (data.done) {
+                                    break;
+                                }
+                            } catch (e) {
+                                console.error('Error parsing SSE data:', e);
+                            }
+                        }
+                    }
+                }
+
+            } catch (error) {
+                console.error('Failed to send message:', error);
+                removeTyping();
+                addMessage('assistant', 'Sorry, I encountered an error. Please try again.');
+            } finally {
+                messageInput.disabled = false;
+                sendButton.disabled = false;
+                messageInput.focus();
+            }
+        }
+
+        // Event listeners
+        sendButton.addEventListener('click', sendMessage);
+        messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        // Initial connection check
+        checkConnection();
+        setInterval(checkConnection, 30000); // Check every 30 seconds
+    </script>
+</body>
+</html>
