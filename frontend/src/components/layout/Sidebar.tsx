@@ -30,7 +30,7 @@ interface SidebarProps {
 
 const menuItems = [
   { id: 'overview' as TabType, label: 'Overview', icon: LayoutDashboard },
-  { id: 'pricing' as TabType, label: 'Order Pricing', icon: DollarSign },
+  { id: 'pricing' as TabType, label: 'Create Order', icon: DollarSign },
   { id: 'forecasting' as TabType, label: 'Forecasting', icon: TrendingUp },
   { id: 'market' as TabType, label: 'Market Signals', icon: Radio },
   { id: 'elasticity' as TabType, label: 'Analysis', icon: Activity },
