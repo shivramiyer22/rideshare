@@ -7,6 +7,7 @@ import { AIPanel } from '@/components/layout/AIPanel';
 import { OverviewTab } from '@/components/tabs/OverviewTab';
 import { PricingTab } from '@/components/tabs/PricingTab';
 import { ForecastingTab } from '@/components/tabs/ForecastingTab';
+import { SegmentPricingAnalysisTab } from '@/components/tabs/SegmentPricingAnalysisTab';
 import { MarketSignalsTab } from '@/components/tabs/MarketSignalsTab';
 import { ElasticityTab } from '@/components/tabs/ElasticityTab';
 import { UploadTab } from '@/components/tabs/UploadTab';
@@ -23,6 +24,8 @@ export default function Home() {
         return <PricingTab />;
       case 'forecasting':
         return <ForecastingTab />;
+      case 'segment-pricing':
+        return <SegmentPricingAnalysisTab />;
       case 'market':
         return <MarketSignalsTab />;
       case 'elasticity':

@@ -741,7 +741,9 @@ def generate_strategic_recommendations(forecasts: str, rules: str) -> str:
                     # - Multiple rules: +50 points per rule (prefer combinations)
                     # - Revenue impact: +1 point per percentage (tiebreaker)
                     # This encourages 2-5 rule combinations over single rules
-                    score = objectives_met * 1000 + len(combo) * 50 + combined_revenue_pct
+                    # Score: objectives_met * 1000 + rule_count_bonus + revenue_impact
+                    # Increased bonus for multiple rules to encourage combinations
+                    score = objectives_met * 1000 + len(combo) * 200 + combined_revenue_pct
                     
                     all_combinations.append({
                         "rules": [r["rule_id"] for r in combo],
@@ -873,8 +875,12 @@ def generate_strategic_recommendations(forecasts: str, rules: str) -> str:
                     new_rides = baseline_rides * (1 + demand_change_pct / 100)
                     new_revenue = new_rides * new_total_price
                     
+                    # Generate segment_key for unique identification
+                    segment_key = f"{dimensions.get('location', '')}_{dimensions.get('loyalty_tier', '')}_{dimensions.get('vehicle_type', '')}_{dimensions.get('pricing_model', 'STANDARD')}_{segment_demand_profile}"
+                    
                     # Store per-segment impact with NEW structure
                     per_segment_impacts[rec_key].append({
+                        "segment_key": segment_key,  # Add for unique identification
                         "segment": {
                             "location_category": dimensions.get("location", ""),
                             "loyalty_tier": dimensions.get("loyalty_tier", ""),

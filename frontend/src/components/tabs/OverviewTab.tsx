@@ -95,6 +95,12 @@ function KPICard({ title, value, change, icon, trend = 'up' }: KPICardProps) {
 
 export function OverviewTab() {
   const [loading, setLoading] = useState(false);
+  const [mounted, setMounted] = useState(false);
+
+  // Only render charts on client-side to avoid hydration errors
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -134,8 +140,9 @@ export function OverviewTab() {
             <CardTitle>Revenue & Rides Trend</CardTitle>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={revenueData}>
+            {mounted ? (
+              <ResponsiveContainer width="100%" height={300} suppressHydrationWarning>
+                <LineChart data={revenueData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                 <XAxis
                   dataKey="date"
@@ -176,6 +183,11 @@ export function OverviewTab() {
                 />
               </LineChart>
             </ResponsiveContainer>
+            ) : (
+              <div className="flex items-center justify-center h-[300px] text-muted-foreground">
+                Loading chart...
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -197,10 +209,11 @@ export function OverviewTab() {
             </div>
           </CardHeader>
           <CardContent>
-            <div className="flex items-center gap-8">
-              {/* Donut Chart */}
-              <div className="flex-shrink-0">
-                <PieChart width={220} height={220}>
+            {mounted ? (
+              <div className="flex items-center gap-8" suppressHydrationWarning>
+                {/* Donut Chart */}
+                <div className="flex-shrink-0">
+                  <PieChart width={220} height={220}>
                   <defs>
                     <linearGradient id="goldGradient" x1="0" y1="0" x2="1" y2="1">
                       <stop offset="0%" stopColor="#2E3C49" />
@@ -278,6 +291,11 @@ export function OverviewTab() {
                 ))}
               </div>
             </div>
+            ) : (
+              <div className="flex items-center justify-center h-[220px] text-muted-foreground">
+                Loading chart...
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
