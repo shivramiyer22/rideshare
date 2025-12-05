@@ -149,8 +149,9 @@ frontend/
 - Confidence intervals (80%)
 - Trend analysis
 - Weekly & daily seasonality charts
-- External factors integration
+- External factors integration (events, traffic, news via n8n)
 - AI-generated forecast explanations
+- **NOTE:** Currently using mock data - Backend integration plan ready (see `supplemental/FORECAST_TAB_BACKEND_INTEGRATION_PLAN.md`)
 
 ### 5. Market Signals
 - Live event tracking (concerts, sports, etc.)
@@ -168,13 +169,14 @@ frontend/
 - Sensitivity scenarios
 - Optimal pricing strategy
 
-### 7. Data Upload
+### 7. Competitor Analysis
 - Market share overview
 - Price comparison charts
 - Route-by-route analysis
 - Competitor promotions tracking
 - Undercut warnings
 - AI-powered competitive recommendations
+- **100% Lyft Coverage:** All 162 segments have Lyft competitor baseline data
 
 ## AI Assistant Panel
 
@@ -294,6 +296,21 @@ For issues or questions, contact the development team.
 ---
 
 ## 🆕 Recent Updates (December 5, 2025)
+
+### Forecast Tab Integration (READY)
+- **Backend Integration Plan:** Complete documentation with 7 phases
+- **API Endpoints Documented:** `/forecast/{horizon}`, `/model-info`, `/seasonality`, `/external-factors`
+- **Frontend Changes Needed:** 10 components identified for backend connection
+- **Testing Strategy:** Comprehensive validation checklist
+- **Mock Data Removal:** Prepared for live data migration
+- **Estimated Effort:** 6 hours for complete integration
+
+### Visualization Exports (NEW)
+- **Pipeline Flow:** Interactive HTML diagram for PowerPoint export
+- **Solution Architecture:** Single-slide architecture diagram
+- **Browser Ready:** Direct viewing in any modern browser
+- **Export Ready:** Copy to PowerPoint or export to PDF
+- **Business Format:** Simplified, concise bullet points for executives
 
 ### Order Creation Enhancements
 - **Success Modal**: Professional confirmation dialog with Order ID and price

@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Solution Architecture</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: white;
+            padding: 40px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border: 2px solid #d1d5db;
+            border-radius: 12px;
+            padding: 40px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        h1 {
+            font-size: 32px;
+            color: #111827;
+            margin-bottom: 10px;
+        }
+        
+        .subtitle {
+            font-size: 18px;
+            color: #2563eb;
+            font-weight: 600;
+        }
+        
+        .diagram-container {
+            background: #f8fafc;
+            border: 2px solid #cbd5e1;
+            border-radius: 8px;
+            padding: 30px;
+            margin-bottom: 30px;
+        }
+        
+        pre {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 10px;
+            line-height: 1.5;
+            color: #1f2937;
+            overflow-x: auto;
+            white-space: pre;
+        }
+        
+        .architecture-layers {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        
+        .layer-card {
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid;
+        }
+        
+        .layer-card h4 {
+            font-size: 13px;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+        
+        .layer-card ul {
+            list-style: none;
+            font-size: 11px;
+            color: #374151;
+        }
+        
+        .layer-card ul li {
+            margin-bottom: 4px;
+        }
+        
+        .layer-card.blue { background: #eff6ff; border-color: #2563eb; }
+        .layer-card.blue h4 { color: #1e3a8a; }
+        
+        .layer-card.purple { background: #f5f3ff; border-color: #7c3aed; }
+        .layer-card.purple h4 { color: #581c87; }
+        
+        .layer-card.green { background: #f0fdf4; border-color: #16a34a; }
+        .layer-card.green h4 { color: #14532d; }
+        
+        .layer-card.orange { background: #fff7ed; border-color: #ea580c; }
+        .layer-card.orange h4 { color: #7c2d12; }
+        
+        .layer-card.red { background: #fef2f2; border-color: #dc2626; }
+        .layer-card.red h4 { color: #7f1d1d; }
+        
+        .layer-card.indigo { background: #eef2ff; border-color: #4f46e5; }
+        .layer-card.indigo h4 { color: #312e81; }
+        
+        .capabilities {
+            background: linear-gradient(to right, #eff6ff, #f5f3ff);
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #d1d5db;
+            margin-bottom: 30px;
+        }
+        
+        .capabilities h3 {
+            text-align: center;
+            font-weight: 700;
+            color: #111827;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+        
+        .capabilities-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            font-size: 11px;
+            text-align: center;
+        }
+        
+        .capability {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        
+        .capability-title {
+            color: white;
+            border-radius: 6px;
+            padding: 10px;
+            margin-bottom: 8px;
+            font-weight: 700;
+            width: 100%;
+        }
+        
+        .capability:nth-child(1) .capability-title { background: #2563eb; }
+        .capability:nth-child(2) .capability-title { background: #7c3aed; }
+        .capability:nth-child(3) .capability-title { background: #16a34a; }
+        .capability:nth-child(4) .capability-title { background: #ea580c; }
+        
+        .capability-desc {
+            color: #374151;
+        }
+        
+        .tech-stack {
+            background: #f9fafb;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #d1d5db;
+            margin-bottom: 30px;
+        }
+        
+        .tech-stack h3 {
+            text-align: center;
+            font-weight: 700;
+            color: #111827;
+            margin-bottom: 15px;
+            font-size: 13px;
+        }
+        
+        .tech-badges {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 10px;
+            font-size: 11px;
+        }
+        
+        .badge {
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-weight: 600;
+        }
+        
+        .badge.blue { background: #dbeafe; color: #1e40af; }
+        .badge.green { background: #d1fae5; color: #065f46; }
+        .badge.purple { background: #e9d5ff; color: #6b21a8; }
+        .badge.orange { background: #fed7aa; color: #9a3412; }
+        .badge.red { background: #fecaca; color: #991b1b; }
+        .badge.indigo { background: #c7d2fe; color: #3730a3; }
+        .badge.pink { background: #fbcfe8; color: #831843; }
+        .badge.teal { background: #99f6e4; color: #115e59; }
+        .badge.yellow { background: #fef08a; color: #713f12; }
+        
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 10px;
+            text-align: center;
+        }
+        
+        .stat-card {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+        
+        .stat-card:nth-child(1) .stat-value { color: #2563eb; }
+        .stat-card:nth-child(2) .stat-value { color: #7c3aed; }
+        .stat-card:nth-child(3) .stat-value { color: #16a34a; }
+        .stat-card:nth-child(4) .stat-value { color: #ea580c; }
+        .stat-card:nth-child(5) .stat-value { color: #dc2626; }
+        
+        .stat-label {
+            font-size: 10px;
+            color: #6b7280;
+        }
+        
+        @media print {
+            body { padding: 0; }
+            .container { border: none; box-shadow: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Dynamic Pricing Solution Architecture</h1>
+            <p class="subtitle">MongoDB Atlas + FastAPI + Next.js + 6 AI Agents + Prophet ML</p>
+        </div>
+
+        <div class="diagram-container">
+            <pre>┌──────────────────────────────────────────────────────────────────────────────┐
+│                        PRESENTATION LAYER                                     │
+│                     Next.js 14 Frontend (Port 3000)                           │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│  Dashboard    │  Segment Analysis  │  Forecasts  │  Chatbot  │  Orders      │
+│  • KPIs       │  • 162 Segments    │  • 30/60/90 │  • AI     │  • Priority  │
+│  • Revenue    │  • HWCO vs Lyft    │  • Prophet  │  • WebSkt │  • Queue     │
+│                                                                               │
+└───────────────────────────────┬───────────────────────────────────────────────┘
+                                │ REST API + WebSocket
+                                ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                          APPLICATION LAYER                                    │
+│                    FastAPI Backend (Python 3.12)                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│  ┌────────────────────┐  ┌────────────────────┐  ┌───────────────────┐     │
+│  │   API Routers      │  │  Pricing Engine    │  │  Prophet ML       │     │
+│  │   • /orders        │  │  • Dynamic rules   │  │  • Forecasting    │     │
+│  │   • /analytics     │  │  • Surge logic     │  │  • 3 models       │     │
+│  │   • /ml            │  │  • Loyalty tiers   │  │  • 30/60/90 days  │     │
+│  │   • /pipeline      │  │  • Multipliers     │  │  • Training       │     │
+│  │   • /chatbot       │  └────────────────────┘  └───────────────────┘     │
+│  │   • /reports       │                                                      │
+│  └────────────────────┘                                                      │
+│                                                                               │
+└───────────────────────────────┬───────────────────────────────────────────────┘
+                                │
+                                ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                            AI AGENT LAYER                                     │
+│                   LangChain + LangGraph + OpenAI GPT-4                        │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────┐         │
+│  │              Orchestrator Agent (Chatbot Router)                │         │
+│  │              • Routes queries to specialist agents              │         │
+│  │              • Maintains conversation context                   │         │
+│  └────────────────────────┬────────────────────────────────────────┘         │
+│                           │                                                   │
+│    ┌──────────────────────┼──────────────────────┐                           │
+│    │          │           │           │          │                           │
+│    ▼          ▼           ▼           ▼          ▼                           │
+│  ┌─────┐  ┌────────┐  ┌────────┐  ┌──────────┐  ┌──────────────┐           │
+│  │Data │  │Analysis│  │Pricing │  │Forecast  │  │Recommendation│           │
+│  │Ingest│  │Agent   │  │Agent   │  │Agent     │  │Agent         │           │
+│  │Agent │  │        │  │        │  │(Prophet) │  │(Strategic)   │           │
+│  └──┬──┘  └───┬────┘  └───┬────┘  └────┬─────┘  └──────┬───────┘           │
+│     │         │            │            │                │                   │
+│     │         └────────────┴────────────┴────────────────┘                   │
+│     │                              │                                          │
+│     │ Embeddings                   │ RAG Queries                             │
+│     ▼                              ▼                                          │
+│  ┌──────────────────────────────────────────────────────────────┐            │
+│  │         ChromaDB (Vector Store - Local Persistence)          │            │
+│  │  • 5 collections with OpenAI embeddings (1536d)              │            │
+│  │  • RAG for context-aware AI responses                        │            │
+│  └──────────────────────────────────────────────────────────────┘            │
+│                                                                               │
+└───────────────────────────────┬───────────────────────────────────────────────┘
+                                │
+                                ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                            DATA LAYER                                         │
+│                      MongoDB Atlas (Cloud Database)                           │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│  Core Data (3)         │  External Data (3)      │  ML & Analytics (3)       │
+│  • ride_orders         │  • events_data          │  • pricing_strategies     │
+│  • customers           │  • traffic_data         │  • pipeline_results       │
+│  • historical_rides    │  • news_articles        │  • ml_training_metadata   │
+│                        │                         │                           │
+│  Total: 9 Collections  │  All indexed & optimized for fast queries           │
+│                                                                               │
+└───────────────────────────────┬───────────────────────────────────────────────┘
+                                │
+                                ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                        EXTERNAL DATA SOURCES                                  │
+│                          (n8n Workflow Automation)                            │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│  PredictHQ Events API    │    TomTom Traffic API    │    NewsHere News API   │
+│  (Daily at 6 AM)         │    (Every 2 minutes)     │    (Every 15 minutes)  │
+│                                                                               │
+└──────────────────────────────────────────────────────────────────────────────┘</pre>
+        </div>
+
+        <div class="architecture-layers">
+            <div class="layer-card blue">
+                <h4>Frontend Layer</h4>
+                <ul>
+                    <li>• Next.js 14 with TypeScript</li>
+                    <li>• Real-time WebSocket chatbot</li>
+                    <li>• Interactive dashboards & charts</li>
+                    <li>• Segment analysis (162 segments)</li>
+                </ul>
+            </div>
+            <div class="layer-card purple">
+                <h4>Backend Layer</h4>
+                <ul>
+                    <li>• FastAPI with async endpoints</li>
+                    <li>• Dynamic pricing engine</li>
+                    <li>• Prophet ML integration</li>
+                    <li>• Pipeline orchestrator</li>
+                </ul>
+            </div>
+            <div class="layer-card green">
+                <h4>AI Agent Layer</h4>
+                <ul>
+                    <li>• 6 specialized AI agents</li>
+                    <li>• LangChain + LangGraph</li>
+                    <li>• OpenAI GPT-4 powered</li>
+                    <li>• RAG with ChromaDB vectors</li>
+                </ul>
+            </div>
+            <div class="layer-card orange">
+                <h4>Data Layer</h4>
+                <ul>
+                    <li>• MongoDB Atlas (cloud)</li>
+                    <li>• 9 collections, indexed</li>
+                    <li>• Change streams real-time</li>
+                    <li>• ChromaDB vector search</li>
+                </ul>
+            </div>
+            <div class="layer-card red">
+                <h4>External Data</h4>
+                <ul>
+                    <li>• PredictHQ: Event intelligence</li>
+                    <li>• TomTom: Traffic data</li>
+                    <li>• NewsHere: Market news</li>
+                    <li>• n8n: Workflow automation</li>
+                </ul>
+            </div>
+            <div class="layer-card indigo">
+                <h4>ML/Analytics</h4>
+                <ul>
+                    <li>• Prophet ML forecasting</li>
+                    <li>• Multi-dimensional analysis</li>
+                    <li>• Segment dynamic pricing</li>
+                    <li>• Competitive intelligence</li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="capabilities">
+            <h3>Core System Capabilities</h3>
+            <div class="capabilities-grid">
+                <div class="capability">
+                    <div class="capability-title">Real-Time</div>
+                    <div class="capability-desc">Live data ingestion & analysis</div>
+                </div>
+                <div class="capability">
+                    <div class="capability-title">AI-Powered</div>
+                    <div class="capability-desc">6 intelligent agents</div>
+                </div>
+                <div class="capability">
+                    <div class="capability-title">Forecasting</div>
+                    <div class="capability-desc">30/60/90-day predictions</div>
+                </div>
+                <div class="capability">
+                    <div class="capability-title">Strategic</div>
+                    <div class="capability-desc">Automated recommendations</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tech-stack">
+            <h3>Technology Stack</h3>
+            <div class="tech-badges">
+                <span class="badge blue">Next.js 14</span>
+                <span class="badge green">FastAPI</span>
+                <span class="badge purple">Python 3.12</span>
+                <span class="badge orange">MongoDB Atlas</span>
+                <span class="badge red">OpenAI GPT-4</span>
+                <span class="badge indigo">Prophet ML</span>
+                <span class="badge pink">LangChain</span>
+                <span class="badge teal">ChromaDB</span>
+                <span class="badge yellow">n8n</span>
+            </div>
+        </div>
+
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-value">9</div>
+                <div class="stat-label">Collections</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">6</div>
+                <div class="stat-label">AI Agents</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">3</div>
+                <div class="stat-label">APIs</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">162</div>
+                <div class="stat-label">Segments</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">100%</div>
+                <div class="stat-label">Cloud Native</div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+
