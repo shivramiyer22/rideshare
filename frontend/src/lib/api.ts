@@ -11,8 +11,9 @@ export const api = axios.create({
 
 // Orders API
 export const ordersAPI = {
-  create: (data: any) => api.post('/api/orders/create', data),
-  getQueue: () => api.get('/api/queue/priority'),
+  create: (data: any) => api.post('/api/v1/orders', data),
+  getQueue: () => api.get('/api/v1/orders/queue/priority'),
+  estimate: (data: any) => api.post('/api/v1/orders/estimate', data),
 };
 
 // Upload API
