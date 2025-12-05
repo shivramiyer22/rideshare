@@ -844,12 +844,14 @@ class AgentPipeline:
                           f"{rec.get('objectives_achieved')}/4 objectives, "
                           f"{rec.get('revenue_impact')} revenue impact")
             
+            # Return properly structured result
+            # result_data contains: {"summary": {...}, "recommendations": [...], "per_segment_impacts": {...}}
             return {
                 "success": True,
                 "data": {
-                    "recommendations": result_data,
-                    "top_3": recommendations,
-                    "per_segment_impacts": per_segment_impacts,
+                    "summary": result_data.get("summary", {}),
+                    "recommendations": recommendations,  # Array of 3 recommendations
+                    "per_segment_impacts": per_segment_impacts,  # Dict with rec_1/2/3 keys
                     "generated_at": datetime.utcnow().isoformat()
                 }
             }
@@ -898,6 +900,84 @@ class AgentPipeline:
             logger.error(f"    What-If phase error: {e}")
             return {"success": False, "error": str(e)}
     
+    def _ensure_business_objectives_exist(self, db) -> None:
+        """
+        Ensure business objectives with clear targets are stored in pricing_strategies collection.
+        These objectives define success criteria for the recommendation system.
+        """
+        objectives = [
+            {
+                "rule_id": "GOAL_MAXIMIZE_REVENUE",
+                "name": "Business Objective: Maximize Revenue",
+                "category": "business_objectives",
+                "objective": "Maximize Revenue",
+                "target": "15-25% increase",
+                "target_min": 15.0,
+                "target_max": 25.0,
+                "metric": "revenue",
+                "unit": "percentage",
+                "strategy": "Dynamic pricing optimization, surge pricing, loyalty rewards",
+                "description": "Increase total revenue by 15-25% through intelligent pricing strategies",
+                "priority": "HIGH",
+                "source": "system_initialized"
+            },
+            {
+                "rule_id": "GOAL_MAXIMIZE_PROFIT_MARGINS",
+                "name": "Business Objective: Maximize Profit Margins",
+                "category": "business_objectives",
+                "objective": "Maximize Profit Margins",
+                "target": "40%+ margin",
+                "target_min": 40.0,
+                "metric": "profit_margin",
+                "unit": "percentage",
+                "strategy": "Optimize operational efficiency, reduce low-margin rides",
+                "description": "Improve profit margins to 40% or higher",
+                "priority": "HIGH",
+                "source": "system_initialized"
+            },
+            {
+                "rule_id": "GOAL_STAY_COMPETITIVE",
+                "name": "Business Objective: Stay Competitive",
+                "category": "business_objectives",
+                "objective": "Stay Competitive",
+                "target": "Close 5% gap with Lyft",
+                "target_value": 5.0,
+                "metric": "competitive_gap",
+                "unit": "percentage",
+                "strategy": "Competitive pricing analysis, market positioning",
+                "description": "Match or exceed competitor pricing while maintaining profitability",
+                "priority": "MEDIUM",
+                "source": "system_initialized"
+            },
+            {
+                "rule_id": "GOAL_CUSTOMER_RETENTION",
+                "name": "Business Objective: Customer Retention",
+                "category": "business_objectives",
+                "objective": "Customer Retention",
+                "target": "10-15% churn reduction",
+                "target_min": 10.0,
+                "target_max": 15.0,
+                "metric": "churn_rate",
+                "unit": "percentage",
+                "strategy": "Loyalty programs, personalized pricing, quality service",
+                "description": "Reduce customer churn by 10-15% through retention strategies",
+                "priority": "MEDIUM",
+                "source": "system_initialized"
+            }
+        ]
+        
+        strategies_collection = db["pricing_strategies"]
+        
+        for obj in objectives:
+            obj["updated_at"] = datetime.utcnow().isoformat()
+            strategies_collection.update_one(
+                {"rule_id": obj["rule_id"]},
+                {"$set": obj},
+                upsert=True
+            )
+        
+        logger.info(f"✓ Ensured {len(objectives)} business objectives exist in pricing_strategies")
+    
     async def _save_run_record(self, record: Dict[str, Any]) -> None:
         """
         Save pipeline run record to MongoDB.
@@ -911,6 +991,9 @@ class AgentPipeline:
             
             client = pymongo.MongoClient(settings.mongodb_url)
             db = client[settings.mongodb_db_name]
+            
+            # Ensure business objectives exist
+            self._ensure_business_objectives_exist(db)
             
             # ====================================================================
             # 1. Save to pipeline_results collection (complete record)
@@ -934,26 +1017,48 @@ class AgentPipeline:
             logger.debug(f"Pipeline record saved to pipeline_results: {record['run_id']}")
             
             # ====================================================================
-            # 2. Save to pricing_strategies collection (per-segment impacts)
+            # 2. Save to pricing_strategies collection (recommendations + impacts)
             # ====================================================================
+            # Extract data from pipeline results
+            results = record.get("results", {})
+            
             # Extract per_segment_impacts from recommendations phase
             per_segment_impacts = (
-                record.get("results", {})
+                results
                 .get("recommendations", {})
                 .get("per_segment_impacts", {})
             )
             
-            if per_segment_impacts and any(per_segment_impacts.values()):
+            # Extract recommendations array (directly from recommendations key)
+            recommendations = (
+                results
+                .get("recommendations", {})
+                .get("recommendations", [])
+            )
+            
+            # Extract pricing_rules from analysis phase
+            pricing_rules = (
+                results
+                .get("analysis", {})
+                .get("pricing_rules", [])
+            )
+            
+            # Only save if we have recommendations or impacts
+            if recommendations or (per_segment_impacts and any(per_segment_impacts.values())):
                 strategies_collection = db["pricing_strategies"]
                 
                 # Build document for pricing_strategies
                 strategy_doc = {
                     "pipeline_run_id": record["run_id"],
+                    "run_id": record["run_id"],  # Add run_id for compatibility
                     "timestamp": record.get("completed_at", datetime.utcnow()),
+                    "recommendations": recommendations,  # Add recommendations array
+                    "pricing_rules": pricing_rules,  # Add pricing_rules array
                     "per_segment_impacts": per_segment_impacts,
                     "metadata": {
-                        "total_segments": sum(len(impacts) for impacts in per_segment_impacts.values()),
-                        "recommendation_count": len([k for k in per_segment_impacts.keys() if per_segment_impacts[k]]),
+                        "total_segments": sum(len(impacts) for impacts in per_segment_impacts.values()) if per_segment_impacts else 0,
+                        "recommendation_count": len(recommendations),
+                        "pricing_rules_count": len(pricing_rules),
                         "generated_at": datetime.utcnow().isoformat()
                     }
                 }
@@ -965,9 +1070,9 @@ class AgentPipeline:
                     upsert=True
                 )
                 
-                logger.debug(f"Per-segment impacts saved to pricing_strategies: {strategy_doc['metadata']['total_segments']} records")
+                logger.debug(f"Saved to pricing_strategies: {len(recommendations)} recommendations, {len(pricing_rules)} rules, {strategy_doc['metadata']['total_segments']} segment impacts")
             else:
-                logger.warning("No per_segment_impacts found in recommendation results, skipping pricing_strategies update")
+                logger.warning("No recommendations or per_segment_impacts found, skipping pricing_strategies update")
             
             client.close()
             

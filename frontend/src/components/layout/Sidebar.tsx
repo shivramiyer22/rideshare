@@ -5,6 +5,7 @@ import {
   LayoutDashboard,
   DollarSign,
   TrendingUp,
+  BarChart3,
   Radio,
   Activity,
   Settings,
@@ -17,6 +18,7 @@ export type TabType =
   | 'overview'
   | 'pricing'
   | 'forecasting'
+  | 'segment-pricing'
   | 'market'
   | 'elasticity'
   | 'upload';
@@ -32,6 +34,7 @@ const menuItems = [
   { id: 'overview' as TabType, label: 'Overview', icon: LayoutDashboard },
   { id: 'pricing' as TabType, label: 'Create Order', icon: DollarSign },
   { id: 'forecasting' as TabType, label: 'Forecasting', icon: TrendingUp },
+  { id: 'segment-pricing' as TabType, label: 'Segment Analysis', icon: BarChart3 },
   { id: 'market' as TabType, label: 'Market Signals', icon: Radio },
   { id: 'elasticity' as TabType, label: 'Analysis', icon: Activity },
   { id: 'upload' as TabType, label: 'Data Upload', icon: Upload },

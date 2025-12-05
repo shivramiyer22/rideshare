@@ -245,7 +245,7 @@ Each segment contains:
 
 ---
 
-## 🔌 API Endpoints (32 Total)
+## 🔌 API Endpoints (34 Total)
 
 ### Health & Core (2)
 - `GET /` - Root endpoint
@@ -280,9 +280,11 @@ Each segment contains:
 - `GET /api/v1/pipeline/last-run` - Last run details
 - `POST /api/v1/pipeline/trigger` - Manual trigger
 
-### Chatbot (2)
+### Chatbot (4)
 - `POST /api/v1/chatbot/chat` - Send message
+- `POST /api/v1/chatbot/chat/stream` - Streaming response (SSE)
 - `GET /api/v1/chatbot/history?thread_id=X&user_id=Y` - Get history
+- `POST /api/v1/chatbot/clear-cache` - Clear response cache
 
 ### Agent Tests (4)
 - `POST /api/v1/agents/test/pricing` - Test pricing agent
@@ -648,6 +650,52 @@ For issues, questions, or contributions:
 
 ---
 
+## 🆕 Recent Updates (December 5, 2025)
+
+### Order Pricing Enhancements
+- **HWCO Forecast Priority**: Order pricing now prioritizes HWCO forecast data over historical fallback
+- **Data Source**: Uses `per_segment_impacts.baseline` from recommendation pipeline
+- **Confidence**: 85% confidence with forward-looking 30-day forecasts
+- **Fallback Strategy**: Historical data used only when HWCO forecast unavailable
+- **Data Exclusions**: Explicitly excludes Lyft competitor data and recommendation adjustments
+
+### Chatbot Improvements
+- **Order Retrieval Tool**: New `get_recent_orders` tool for querying order information
+- **Enhanced Routing**: Orchestrator now routes "order ID", "latest order", "my order" queries to Analysis Agent
+- **MongoDB Tool**: Synchronous MongoDB access for reliable order fetching
+- **Response Caching**: 5-minute cache for frequently asked questions (cleared via `/clear-cache`)
+- **Formatting Enforcement**: Post-processing to clean agent responses (converts `###` to `##`, removes numbered headers)
+- **Markdown Support**: Full markdown rendering in chat responses
+- **Streaming Responses**: Server-Sent Events (SSE) for token-by-token streaming
+
+### Agent System Updates
+- **Analysis Agent**: Added `get_recent_orders(limit, user_id)` tool for order queries
+- **Orchestrator Agent**: Updated routing examples for order-related queries
+- **System Prompts**: Refined for concise, well-formatted responses
+- **Page Context Awareness**: Agents now receive current page context from frontend
+- **Business Objectives**: All 4 objectives with measurable targets always included in responses
+
+### Segment Analysis Enhancements  
+- **Forecast Data Source**: `get_segment_forecast_data()` now queries `per_segment_impacts` collection
+- **Priority Logic**: HWCO forecast → Historical → Conservative fallback ($15.00)
+- **Data Transparency**: Shows data source in pricing explanations
+- **Confidence Tracking**: 85% confidence for HWCO forecasts
+
+### API Improvements
+- **Orders Endpoint**: Fixed trailing slash requirement (`/api/v1/orders/` not `/api/v1/orders`)
+- **Response Format**: Standardized JSON responses with proper error handling
+- **Validation**: Enhanced 422 error messages for better debugging
+- **Chat History**: Fixed chronological order (oldest→newest)
+
+### Bug Fixes
+- **MongoDB Connection Leaks**: Singleton pattern for sync client to prevent connection exhaustion
+- **Chat History Refresh**: Separated health check from history loading to prevent polling
+- **ReferenceError**: Fixed `loadChatHistory` initialization order in frontend
+- **Formatting Regression**: Added `clean_response_formatting` post-processor
+- **Rule Application**: Fixed `rule_applies_to_segment` for event-based and news-based rules
+
+---
+
 ## 📝 Version History
 
 **v1.0.0** (December 2, 2025)
@@ -664,7 +712,7 @@ For issues, questions, or contributions:
 ---
 
 **System Status:** 🟢 Production Ready  
-**Test Coverage:** ✅ 32/32 endpoints passing (100%)  
+**Test Coverage:** ✅ 34/34 endpoints passing (100%)  
 **Data Quality:** ✅ 7,750 historical rides + 2,000 competitor records  
 **ML Model:** ✅ Trained with 24 regressors  
 **Pipeline:** ✅ Automated hourly execution  

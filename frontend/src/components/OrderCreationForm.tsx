@@ -86,10 +86,11 @@ export function OrderCreationForm() {
     vehicleType: '' as any,
   });
 
-  // UI state
+// UI state
   const [errors, setErrors] = useState<FormErrors>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [successModal, setSuccessModal] = useState<{ orderId: string; price: number } | null>(null);
   
   // Price estimation state
   const [estimate, setEstimate] = useState<PriceEstimate>({
@@ -218,13 +219,30 @@ export function OrderCreationForm() {
     setIsSubmitting(true);
 
     try {
-      // Call API to create order
-      const response = await ordersAPI.create(formData);
+      // Transform frontend form data to match backend OrderCreate schema
+      const orderPayload = {
+        user_id: formData.customerName, // Use customer name as user_id
+        pickup_location: {
+          name: formData.origin,
+          category: formData.locationCategory
+        },
+        dropoff_location: {
+          name: formData.destination
+        },
+        location_category: formData.locationCategory,
+        loyalty_tier: formData.loyaltyStatus,
+        vehicle_type: formData.vehicleType,
+        pricing_model: formData.pricingModel,
+        priority: "P2" // Default priority
+      };
 
-      // Show success toast
-      setToast({
-        message: 'Order created successfully! Added to priority queue.',
-        type: 'success',
+      // Call API to create order
+      const response = await ordersAPI.create(orderPayload);
+
+      // Show success modal with order ID
+      setSuccessModal({
+        orderId: response.data.id,
+        price: response.data.estimated_price
       });
 
       // Reset form
@@ -232,9 +250,27 @@ export function OrderCreationForm() {
     } catch (error: any) {
       console.error('Error creating order:', error);
       
+      // Handle validation errors (422)
+      let errorMessage = 'Failed to create order. Please try again.';
+      
+      if (error.response?.status === 422 && error.response?.data?.detail) {
+        const detail = error.response.data.detail;
+        
+        // If detail is an array of validation errors
+        if (Array.isArray(detail)) {
+          errorMessage = detail.map((err: any) => `${err.loc?.join('.')} - ${err.msg}`).join(', ');
+        } else if (typeof detail === 'string') {
+          errorMessage = detail;
+        } else if (typeof detail === 'object') {
+          errorMessage = JSON.stringify(detail);
+        }
+      } else if (error.response?.data?.detail) {
+        errorMessage = error.response.data.detail;
+      }
+      
       // Show error toast
       setToast({
-        message: error.response?.data?.detail || 'Failed to create order. Please try again.',
+        message: errorMessage,
         type: 'error',
       });
     } finally {
@@ -636,6 +672,56 @@ export function OrderCreationForm() {
           type={toast.type}
           onClose={() => setToast(null)}
         />
+      )}
+
+      {/* Success Modal */}
+      {successModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 max-w-md w-full mx-4 animate-scale-in">
+            {/* Success Icon */}
+            <div className="flex items-center justify-center mb-4">
+              <div className="w-16 h-16 bg-green-100 dark:bg-green-900 rounded-full flex items-center justify-center">
+                <svg className="w-8 h-8 text-green-600 dark:text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+            </div>
+
+            {/* Title */}
+            <h3 className="text-xl font-semibold text-center text-gray-900 dark:text-white mb-4">
+              Order Created Successfully!
+            </h3>
+
+            {/* Order Details */}
+            <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 mb-4 space-y-2">
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-gray-600 dark:text-gray-400">Order ID:</span>
+                <span className="text-sm font-mono font-semibold text-gray-900 dark:text-white">
+                  {successModal.orderId}
+                </span>
+              </div>
+              <div className="flex justify-between items-center pt-2 border-t border-gray-200 dark:border-gray-600">
+                <span className="text-sm text-gray-600 dark:text-gray-400">Estimated Price:</span>
+                <span className="text-lg font-bold text-green-600 dark:text-green-400">
+                  ${successModal.price.toFixed(2)}
+                </span>
+              </div>
+            </div>
+
+            {/* Additional Info */}
+            <p className="text-sm text-gray-600 dark:text-gray-400 text-center mb-6">
+              Your order has been added to the priority queue and will be processed shortly.
+            </p>
+
+            {/* OK Button */}
+            <button
+              onClick={() => setSuccessModal(null)}
+              className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+            >
+              OK
+            </button>
+          </div>
+        </div>
       )}
     </>
   );

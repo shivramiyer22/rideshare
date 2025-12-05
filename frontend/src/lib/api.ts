@@ -11,7 +11,7 @@ export const api = axios.create({
 
 // Orders API
 export const ordersAPI = {
-  create: (data: any) => api.post('/api/v1/orders', data),
+  create: (data: any) => api.post('/api/v1/orders/', data), // Added trailing slash to avoid 307 redirect
   getQueue: () => api.get('/api/v1/orders/queue/priority'),
   estimate: (data: any) => api.post('/api/v1/orders/estimate', data),
 };

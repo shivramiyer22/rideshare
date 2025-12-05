@@ -23,23 +23,20 @@ const generateSessionId = () => {
   return newId;
 };
 
-export function useChatbot() {
+export function useChatbot(pageContext?: { currentPage?: string; pageData?: any }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [threadId] = useState(generateSessionId);
   const [userId] = useState('web_user'); // Could be replaced with actual user ID from auth
 
-  // Check backend connectivity and load chat history on mount
+  // Check backend connectivity every 30 seconds
   useEffect(() => {
     const checkConnection = async () => {
       try {
-        // Test connection to backend
         const response = await axios.get(`${API_URL}/health`, { timeout: 5000 });
         if (response.status === 200) {
           setIsConnected(true);
-          // Load chat history for this thread
-          await loadChatHistory();
         }
       } catch (error) {
         console.error('Backend connection failed:', error);
@@ -48,12 +45,10 @@ export function useChatbot() {
     };
 
     checkConnection();
-    
-    // Check connection every 30 seconds
     const interval = setInterval(checkConnection, 30000);
     
     return () => clearInterval(interval);
-  }, [threadId]);
+  }, []);
 
   const loadChatHistory = useCallback(async () => {
     try {
@@ -68,8 +63,8 @@ export function useChatbot() {
 
       if (response.data && Array.isArray(response.data)) {
         // Convert backend format to frontend format
+        // Backend already returns oldest first (chronological order)
         const loadedMessages: Message[] = response.data
-          .reverse() // Backend returns newest first, we want oldest first
           .map((msg: any) => ({
             id: msg._id || Date.now().toString(),
             role: msg.role,
@@ -87,6 +82,13 @@ export function useChatbot() {
       setMessages([]); // Start with empty messages
     }
   }, [threadId, userId]);
+
+  // Load chat history only once when connected or thread changes
+  useEffect(() => {
+    if (isConnected) {
+      loadChatHistory();
+    }
+  }, [threadId, isConnected, loadChatHistory]);
 
   const sendMessage = useCallback(
     async (content: string) => {
@@ -114,7 +116,9 @@ export function useChatbot() {
             message: content,
             context: {
               thread_id: threadId,
-              user_id: userId
+              user_id: userId,
+              current_page: pageContext?.currentPage || 'unknown',
+              page_data: pageContext?.pageData || null
             }
           }),
         });
@@ -214,8 +218,9 @@ export function useChatbot() {
   );
 
   const clearMessages = useCallback(() => {
+    // Clear all messages from UI
     setMessages([]);
-    // Clear session storage to start a new conversation
+    // Clear session storage to start a new conversation with new thread_id
     if (typeof window !== 'undefined') {
       sessionStorage.removeItem('chatbot_thread_id');
     }
