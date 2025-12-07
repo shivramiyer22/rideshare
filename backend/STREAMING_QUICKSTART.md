@@ -188,3 +188,4 @@ Visit `http://localhost:8000/docs` and look for:
 The streaming chatbot is **fully functional** and ready to use. Just open the frontend and start chatting! The AI will respond in real-time with intelligent routing to the right specialist agents.
 
 **Enjoy your new ChatGPT-style experience!** 🚀
+

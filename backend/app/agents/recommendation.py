@@ -515,6 +515,79 @@ def generate_strategic_recommendations(forecasts: str, rules: str) -> str:
     Returns:
         str: JSON with top 3 strategic recommendations
     """
+    
+    def _generate_detailed_segment_explanation(
+        segment: Dict[str, Any],
+        applied_rules: list,
+        baseline_rides: float,
+        new_rides: float,
+        baseline_revenue: float,
+        new_revenue: float,
+        baseline_unit_price: float,
+        new_unit_price: float,
+        price_change_pct: float,
+        demand_change_pct: float
+    ) -> str:
+        """
+        Generate a detailed explanation for per-segment impact.
+        
+        This explanation includes:
+        - Segment identification
+        - Rules and strategies applied
+        - Pricing changes
+        - Demand impact
+        - Revenue outcome
+        """
+        # Segment description
+        location = segment.get("location", "Unknown")
+        loyalty = segment.get("loyalty_tier", "Regular")
+        vehicle = segment.get("vehicle_type", "Economy")
+        
+        if not applied_rules:
+            return f"No rules applied to {location}-{loyalty}-{vehicle} segment. Baseline forecast maintained."
+        
+        # Rules applied
+        rule_details = []
+        for rule in applied_rules:
+            multiplier_pct = (rule['multiplier'] - 1.0) * 100
+            sign = "+" if multiplier_pct > 0 else ""
+            rule_details.append(f"{rule['rule_name']} ({sign}{multiplier_pct:.1f}%)")
+        
+        rules_text = ", ".join(rule_details)
+        
+        # Build explanation
+        explanation_parts = []
+        
+        # 1. Segment and rules
+        explanation_parts.append(
+            f"For {location}-{loyalty}-{vehicle} segment: Applied {len(applied_rules)} rule(s) - {rules_text}."
+        )
+        
+        # 2. Pricing strategy
+        if price_change_pct != 0:
+            price_direction = "increased" if price_change_pct > 0 else "decreased"
+            explanation_parts.append(
+                f"Strategy: {price_direction.capitalize()} unit price from ${baseline_unit_price:.4f}/min to ${new_unit_price:.4f}/min ({price_change_pct:+.1f}%)."
+            )
+        
+        # 3. Demand impact
+        if demand_change_pct != 0:
+            demand_direction = "decrease" if demand_change_pct < 0 else "increase"
+            explanation_parts.append(
+                f"Demand impact: {abs(demand_change_pct):.1f}% {demand_direction} in rides ({baseline_rides:.1f} → {new_rides:.1f} rides/30d)."
+            )
+        
+        # 4. Revenue outcome
+        revenue_change = new_revenue - baseline_revenue
+        revenue_change_pct = (revenue_change / baseline_revenue * 100) if baseline_revenue > 0 else 0
+        revenue_direction = "increase" if revenue_change > 0 else "decrease"
+        
+        explanation_parts.append(
+            f"Revenue outcome: {abs(revenue_change_pct):.1f}% {revenue_direction} (${baseline_revenue:,.0f} → ${new_revenue:,.0f})."
+        )
+        
+        return " ".join(explanation_parts)
+    
     try:
         import itertools
         
@@ -906,7 +979,18 @@ def generate_strategic_recommendations(forecasts: str, rules: str) -> str:
                             "segment_demand_profile": segment_demand_profile
                         },
                         "applied_rules": applied_rules,
-                        "explanation": f"Applied {len(applied_rules)} rule(s): {', '.join(r['rule_name'] for r in applied_rules)}" if applied_rules else "No rules applied to this segment"
+                        "explanation": _generate_detailed_segment_explanation(
+                            segment=dimensions,
+                            applied_rules=applied_rules,
+                            baseline_rides=baseline_rides,
+                            new_rides=new_rides,
+                            baseline_revenue=baseline_revenue,
+                            new_revenue=new_revenue,
+                            baseline_unit_price=baseline_unit_price,
+                            new_unit_price=new_unit_price,
+                            price_change_pct=price_change_pct,
+                            demand_change_pct=demand_change_pct
+                        )
                     })
         
         result = {

@@ -1,9 +1,8 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { TrendingUp, TrendingDown, Minus, RefreshCw } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Button } from '@/components/ui/Button';
 import { Select } from '@/components/ui/Select';
 import { Badge } from '@/components/ui/Badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs';
@@ -22,18 +21,28 @@ import {
 import { mlAPI } from '@/lib/api';
 import { formatNumber, formatDate } from '@/lib/utils';
 
-// Mock forecast data
+// Mock forecast data with 4 metrics
 const generate30DayForecast = () => {
   const data = [];
   const startDate = new Date();
   for (let i = 0; i < 30; i++) {
     const date = new Date(startDate);
     date.setDate(date.getDate() + i);
+    const rides = 145 + Math.random() * 50 + Math.sin(i / 7) * 30;
+    const price = 3.2 + Math.random() * 0.8 + Math.sin(i / 5) * 0.5; // $/min
+    const duration = 25 + Math.random() * 10 + Math.cos(i / 6) * 5; // minutes
+    const revenue = rides * price * duration;
+    
     data.push({
       date: date.toISOString().split('T')[0],
-      predicted: 145 + Math.random() * 50 + Math.sin(i / 7) * 30,
-      lower: 120 + Math.random() * 30,
-      upper: 170 + Math.random() * 40,
+      rides: Math.round(rides),
+      price: price,
+      duration: duration,
+      revenue: revenue,
+      // For stats/display
+      predicted: rides,
+      lower: rides * 0.85,
+      upper: rides * 1.15,
       trend: 145 + i * 0.5,
     });
   }
@@ -46,11 +55,20 @@ const generate60DayForecast = () => {
   for (let i = 0; i < 60; i++) {
     const date = new Date(startDate);
     date.setDate(date.getDate() + i);
+    const rides = 145 + Math.random() * 60 + Math.sin(i / 7) * 35;
+    const price = 3.2 + Math.random() * 0.9 + Math.sin(i / 5) * 0.6;
+    const duration = 25 + Math.random() * 12 + Math.cos(i / 6) * 6;
+    const revenue = rides * price * duration;
+    
     data.push({
       date: date.toISOString().split('T')[0],
-      predicted: 145 + Math.random() * 60 + Math.sin(i / 7) * 35,
-      lower: 115 + Math.random() * 35,
-      upper: 175 + Math.random() * 45,
+      rides: Math.round(rides),
+      price: price,
+      duration: duration,
+      revenue: revenue,
+      predicted: rides,
+      lower: rides * 0.85,
+      upper: rides * 1.15,
       trend: 145 + i * 0.6,
     });
   }
@@ -63,11 +81,20 @@ const generate90DayForecast = () => {
   for (let i = 0; i < 90; i++) {
     const date = new Date(startDate);
     date.setDate(date.getDate() + i);
+    const rides = 145 + Math.random() * 70 + Math.sin(i / 7) * 40;
+    const price = 3.2 + Math.random() * 1.0 + Math.sin(i / 5) * 0.7;
+    const duration = 25 + Math.random() * 15 + Math.cos(i / 6) * 7;
+    const revenue = rides * price * duration;
+    
     data.push({
       date: date.toISOString().split('T')[0],
-      predicted: 145 + Math.random() * 70 + Math.sin(i / 7) * 40,
-      lower: 110 + Math.random() * 40,
-      upper: 180 + Math.random() * 50,
+      rides: Math.round(rides),
+      price: price,
+      duration: duration,
+      revenue: revenue,
+      predicted: rides,
+      lower: rides * 0.85,
+      upper: rides * 1.15,
       trend: 145 + i * 0.7,
     });
   }
@@ -77,8 +104,7 @@ const generate90DayForecast = () => {
 export function ForecastingTab() {
   const [pricingModel, setPricingModel] = useState('STANDARD');
   const [forecastHorizon, setForecastHorizon] = useState<'30d' | '60d' | '90d'>('30d');
-  const [loading, setLoading] = useState(false);
-  const [forecastData, setForecastData] = useState({
+  const [forecastData] = useState({
     '30d': generate30DayForecast(),
     '60d': generate60DayForecast(),
     '90d': generate90DayForecast(),
@@ -87,25 +113,6 @@ export function ForecastingTab() {
   const currentData = forecastData[forecastHorizon];
   const trendDirection = currentData[currentData.length - 1].trend > currentData[0].trend ? 'up' : 'down';
   const avgPredicted = currentData.reduce((sum, d) => sum + d.predicted, 0) / currentData.length;
-
-  const handleRefresh = async () => {
-    setLoading(true);
-    try {
-      // const response = await mlAPI.forecast(forecastHorizon, pricingModel);
-      // setForecastData(prev => ({ ...prev, [forecastHorizon]: response.data.forecast }));
-      
-      // For now, regenerate mock data
-      setForecastData({
-        '30d': generate30DayForecast(),
-        '60d': generate60DayForecast(),
-        '90d': generate90DayForecast(),
-      });
-    } catch (error) {
-      console.error('Forecast refresh failed:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   return (
     <div className="space-y-6">
@@ -132,22 +139,6 @@ export function ForecastingTab() {
               <Badge variant="success" className="text-sm">
                 Prophet ML
               </Badge>
-            </div>
-
-            <div className="pt-6">
-              <Button 
-                onClick={handleRefresh} 
-                disabled={loading} 
-                variant="outline"
-                className="border-none text-white hover:opacity-90"
-                style={{
-                  background: 'linear-gradient(135deg, #3E4C59 0%, #6B8AA8 100%)',
-                  boxShadow: '4px 4px 8px rgba(0, 0, 0, 0.15), -2px -2px 6px rgba(255, 255, 255, 0.1)',
-                }}
-              >
-                <RefreshCw size={16} className="mr-2" />
-                Refresh
-              </Button>
             </div>
           </div>
         </CardContent>
@@ -228,13 +219,7 @@ export function ForecastingTab() {
         </CardHeader>
         <CardContent>
           <ResponsiveContainer width="100%" height={400}>
-            <AreaChart data={currentData}>
-              <defs>
-                <linearGradient id="confidenceGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.1} />
-                  <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                </linearGradient>
-              </defs>
+            <LineChart data={currentData}>
               <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
               <XAxis
                 dataKey="date"
@@ -249,6 +234,7 @@ export function ForecastingTab() {
                 stroke="hsl(var(--muted-foreground))"
                 fontSize={12}
                 tickFormatter={(value) => formatNumber(value)}
+                label={{ value: 'Scaled Values', angle: -90, position: 'insideLeft' }}
               />
               <Tooltip
                 contentStyle={{
@@ -257,50 +243,57 @@ export function ForecastingTab() {
                   borderRadius: '8px',
                 }}
                 labelFormatter={(value) => formatDate(value)}
-                formatter={(value: any) => formatNumber(Math.round(value))}
+                formatter={(value: any, name: string) => {
+                  if (name === 'Demand (Rides)') return [Math.round(value), name];
+                  if (name === 'Unit Price ($/min) ×50') return [`$${(value / 50).toFixed(4)}/min`, 'Unit Price'];
+                  if (name === 'Avg Duration (min) ×5') return [`${(value * 5).toFixed(1)} min`, 'Duration'];
+                  if (name === 'Revenue (÷100)') return [`$${formatNumber(Math.round(value * 100))}`, 'Revenue'];
+                  return [formatNumber(value), name];
+                }}
               />
               <Legend />
-              
-              {/* Confidence Interval */}
-              <Area
-                type="monotone"
-                dataKey="upper"
-                stroke="none"
-                fill="url(#confidenceGradient)"
-                fillOpacity={0.3}
-                name="Upper Bound"
-              />
-              <Area
-                type="monotone"
-                dataKey="lower"
-                stroke="none"
-                fill="url(#confidenceGradient)"
-                fillOpacity={0.3}
-                name="Lower Bound"
-              />
-              
-              {/* Predicted Line */}
+
+              {/* All 4 metrics as separate lines with scaling */}
               <Line
                 type="monotone"
-                dataKey="predicted"
-                stroke="hsl(var(--primary))"
+                dataKey="rides"
+                stroke="#3b82f6"
                 strokeWidth={3}
                 dot={false}
-                name="Predicted Demand"
+                name="Demand (Rides)"
               />
-              
-              {/* Trend Line */}
+
               <Line
                 type="monotone"
-                dataKey="trend"
-                stroke="hsl(var(--accent-foreground))"
-                strokeWidth={2}
-                strokeDasharray="5 5"
+                dataKey={(d: any) => d.price * 50}
+                stroke="#10b981"
+                strokeWidth={3}
                 dot={false}
-                name="Trend"
+                name="Unit Price ($/min) ×50"
               />
-            </AreaChart>
+
+              <Line
+                type="monotone"
+                dataKey={(d: any) => d.duration / 5}
+                stroke="#f59e0b"
+                strokeWidth={3}
+                dot={false}
+                name="Avg Duration (min) ×5"
+              />
+
+              <Line
+                type="monotone"
+                dataKey={(d: any) => d.revenue / 100}
+                stroke="#8b5cf6"
+                strokeWidth={3}
+                dot={false}
+                name="Revenue (÷100)"
+              />
+            </LineChart>
           </ResponsiveContainer>
+          <div className="mt-4 text-xs text-muted-foreground text-center">
+            Prophet ML multi-metric forecast with 24 regressors. Note: Price scaled ×50, Duration scaled ÷5, Revenue scaled ÷100 for visual clarity.
+          </div>
         </CardContent>
       </Card>
 

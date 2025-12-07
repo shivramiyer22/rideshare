@@ -67,3 +67,4 @@ Navigate to http://localhost:8000/docs → orders → GET /api/v1/orders → Try
 
 ## Status
 ✅ FIXED - Collection name corrected to 'orders'
+

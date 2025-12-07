@@ -13,6 +13,93 @@ import { useChatbot } from '@/hooks/useChatbot';
 import { cn } from '@/lib/utils';
 import { TabType } from './Sidebar';
 
+/**
+ * Format markdown-style text to HTML for better readability
+ * Converts:
+ * - ## Headers to styled headers with spacing
+ * - ### Subheaders to smaller styled headers
+ * - **bold** to strong tags
+ * - *italic* to em tags
+ * - • bullets to proper list items
+ * - Numbers (1., 2., etc.) to ordered list items
+ * - Code blocks with ``` to styled code
+ * - Inline `code` to styled code
+ * - Preserves emojis and spacing
+ */
+function formatMarkdown(text: string): string {
+  let html = text;
+  
+  // Convert ### Subheaders to styled h4
+  html = html.replace(/^### (.+)$/gm, '<h4 class="text-sm font-semibold mt-3 mb-1.5 text-primary">$1</h4>');
+  
+  // Convert ## Headers (with optional emojis) to styled h3
+  html = html.replace(/^## (.+)$/gm, '<h3 class="text-base font-bold mt-4 mb-2 first:mt-0 text-foreground">$1</h3>');
+  
+  // Convert inline `code` (before bold to avoid conflicts)
+  html = html.replace(/`([^`]+)`/g, '<code class="px-1.5 py-0.5 rounded bg-accent/50 text-accent-foreground font-mono text-xs">$1</code>');
+  
+  // Convert **bold** to strong tags
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong class="font-bold text-foreground">$1</strong>');
+  
+  // Convert *italic* to em tags
+  html = html.replace(/\*(.+?)\*/g, '<em class="italic">$1</em>');
+  
+  // Convert bullet points and numbered lists
+  const lines = html.split('\n');
+  let inBulletList = false;
+  let inNumberedList = false;
+  const processedLines: string[] = [];
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const isBullet = /^[•\-\*]\s+/.test(line);
+    const isNumbered = /^\d+\.\s+/.test(line);
+    
+    if (isBullet) {
+      if (!inBulletList) {
+        if (inNumberedList) {
+          processedLines.push('</ol>');
+          inNumberedList = false;
+        }
+        processedLines.push('<ul class="list-disc list-inside space-y-1.5 my-2 ml-2">');
+        inBulletList = true;
+      }
+      processedLines.push(`<li class="text-sm">${line.replace(/^[•\-\*]\s+/, '')}</li>`);
+    } else if (isNumbered) {
+      if (!inNumberedList) {
+        if (inBulletList) {
+          processedLines.push('</ul>');
+          inBulletList = false;
+        }
+        processedLines.push('<ol class="list-decimal list-inside space-y-1.5 my-2 ml-2">');
+        inNumberedList = true;
+      }
+      processedLines.push(`<li class="text-sm">${line.replace(/^\d+\.\s+/, '')}</li>`);
+    } else {
+      if (inBulletList) {
+        processedLines.push('</ul>');
+        inBulletList = false;
+      }
+      if (inNumberedList) {
+        processedLines.push('</ol>');
+        inNumberedList = false;
+      }
+      processedLines.push(line);
+    }
+  }
+  
+  if (inBulletList) processedLines.push('</ul>');
+  if (inNumberedList) processedLines.push('</ol>');
+  
+  html = processedLines.join('\n');
+  
+  // Add spacing between paragraphs
+  html = html.replace(/\n\n/g, '<div class="h-3"></div>');
+  html = html.replace(/\n/g, '<br/>');
+  
+  return html;
+}
+
 interface AIPanelProps {
   activeTab: TabType;
 }
@@ -193,23 +280,27 @@ export function AIPanel({ activeTab }: AIPanelProps) {
               <div
                 key={message.id}
                 className={cn(
-                  'p-3 rounded-lg',
+                  'p-4 rounded-lg',
                   message.role === 'user'
                     ? 'bg-primary text-primary-foreground ml-4'
                     : 'bg-muted mr-4'
                 )}
               >
                 <div 
-                  className="text-sm whitespace-pre-wrap break-words prose prose-sm max-w-none dark:prose-invert"
+                  className={cn(
+                    "text-sm leading-relaxed",
+                    message.role === 'assistant' && "space-y-3"
+                  )}
                   style={{ 
                     wordBreak: 'break-word',
                     overflowWrap: 'break-word'
                   }}
-                >
-                  {message.content}
-                </div>
+                  dangerouslySetInnerHTML={{ __html: formatMarkdown(message.content) }}
+                />
                 {message.agent && (
-                  <p className="text-xs opacity-70 mt-1">via {message.agent}</p>
+                  <p className="text-xs opacity-70 mt-2 pt-2 border-t border-border/50">
+                    via {message.agent}
+                  </p>
                 )}
               </div>
             ))

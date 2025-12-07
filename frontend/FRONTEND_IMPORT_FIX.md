@@ -67,3 +67,4 @@ cd frontend && npm run dev
 
 The "Segment Pricing Analysis" tab will now work correctly with no external dependencies.
 
+

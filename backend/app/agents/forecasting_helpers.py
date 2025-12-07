@@ -319,3 +319,4 @@ def prepare_historical_data_for_prophet(
     except Exception as e:
         logger.error(f"Error preparing historical data for Prophet: {e}")
         return None
+

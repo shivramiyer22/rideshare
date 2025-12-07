@@ -270,3 +270,4 @@ If you don't have a base dish (e.g., "salmon"), you can't offer ANY portion size
 ---
 
 **Summary**: Base coverage (54) represents the fundamental business combinations, and it's the building block for the full 162 segments. Without complete base coverage, we'd have gaps in our forecasting and pricing strategy!
+

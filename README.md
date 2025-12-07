@@ -11,6 +11,12 @@
 
 ---
 
+## 🎥 Live Demo
+
+**Watch the full platform demonstration:** [HWCO Dynamic Pricing Platform Demo](https://youtu.be/H_wkV_PjeGs)
+
+---
+
 ## 🎯 Overview
 
 HWCO is an enterprise-grade rideshare pricing platform that combines AI agents, machine learning, and real-time data integration to optimize pricing strategies across 162 market segments. The system delivers actionable intelligence through automated forecasting, competitor analysis, and business recommendations.

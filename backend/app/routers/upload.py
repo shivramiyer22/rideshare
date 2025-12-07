@@ -12,8 +12,8 @@ import pandas as pd
 import io
 import logging
 from datetime import datetime, timezone
-from typing import Dict, Any
-from fastapi import APIRouter, UploadFile, File, HTTPException, status
+from typing import Dict, Any, Optional
+from fastapi import APIRouter, UploadFile, File, HTTPException, status, Query
 from fastapi.responses import JSONResponse
 
 from app.database import get_database
@@ -675,15 +675,16 @@ async def upload_competitor_data(file: UploadFile = File(...)):
 @router.post("/pricing-strategies")
 async def upload_pricing_strategies(file: UploadFile = File(...)):
     """
-    Upload pricing strategies and business rules (JSON format).
+    Upload pricing strategies and business rules (JSON or CSV format).
     
     These rules are stored in MongoDB and processed by the Data Ingestion Agent
     to create embeddings in `strategy_knowledge_vectors` ChromaDB collection.
     
-    The Recommendation Agent uses this as its PRIMARY RAG source for
-    generating strategic recommendations.
+    **Supported Formats:**
+    - JSON: Structured format with nested categories
+    - CSV: Flat format with columns (rule_id, name, category, description, etc.)
     
-    JSON format expected:
+    **JSON format expected:**
     {
         "pricing_rules": {
             "location_based": [...],
@@ -693,95 +694,153 @@ async def upload_pricing_strategies(file: UploadFile = File(...)):
         }
     }
     
+    **CSV format expected:**
+    rule_id,name,category,description,condition,action,expected_impact
+    RUSH_MORNING,Morning Rush Surge,rush_hour,...
+    
     Each rule should have:
     - rule_id: Unique identifier
     - name: Human-readable name
     - description: What the rule does
-    - condition: When to apply the rule
-    - action: What action to take
+    - condition: When to apply the rule (JSON string for CSV)
+    - action: What action to take (JSON string for CSV)
     - expected_impact: Expected business impact
     """
     import json
+    import csv
+    import io
     
     try:
         # Validate file type
         filename = file.filename.lower() if file.filename else ""
-        if not filename.endswith(".json"):
+        if not (filename.endswith(".json") or filename.endswith(".csv")):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Only JSON files are supported for pricing strategies"
+                detail="Only JSON and CSV files are supported for pricing strategies"
             )
         
         # Read file content
         content = await file.read()
-        
-        try:
-            data = json.loads(content.decode("utf-8"))
-        except json.JSONDecodeError as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid JSON format: {str(e)}"
-            )
-        
-        # Extract rules from the JSON structure
         rules_to_insert = []
         
-        # Get the pricing_rules section
-        pricing_rules = data.get("pricing_rules", data)
-        
-        # Process each category of rules
-        for category, rules in pricing_rules.items():
-            if isinstance(rules, list):
-                for rule in rules:
-                    if isinstance(rule, dict):
-                        # Add category to the rule
-                        rule["category"] = category
-                        rule["uploaded_at"] = datetime.now(timezone.utc).isoformat()
-                        rule["source"] = "pricing_strategies_upload"
-                        rules_to_insert.append(rule)
-        
-        # Also extract metadata and business objectives if present
-        if "metadata" in data:
-            metadata_doc = {
-                "rule_id": "METADATA",
-                "name": "Pricing Rules Metadata",
-                "category": "metadata",
-                "description": f"Pricing rules version {data['metadata'].get('version', '1.0')}",
-                **data["metadata"],
-                "uploaded_at": datetime.now(timezone.utc).isoformat(),
-                "source": "pricing_strategies_upload"
-            }
-            rules_to_insert.append(metadata_doc)
-        
-        if "business_objectives" in data:
-            for goal in data["business_objectives"].get("primary_goals", []):
-                goal_doc = {
-                    "rule_id": f"GOAL_{goal.get('objective', 'UNKNOWN')}",
-                    "name": f"Business Objective: {goal.get('objective', 'Unknown')}",
-                    "category": "business_objectives",
-                    "description": f"{goal.get('objective')}: {goal.get('target')} via {goal.get('strategy')}",
-                    **goal,
+        # ====================================================================
+        # Process JSON file
+        # ====================================================================
+        if filename.endswith(".json"):
+            try:
+                data = json.loads(content.decode("utf-8"))
+            except json.JSONDecodeError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid JSON format: {str(e)}"
+                )
+            
+            # Get the pricing_rules section
+            pricing_rules = data.get("pricing_rules", data)
+            
+            # Process each category of rules
+            for category, rules in pricing_rules.items():
+                if isinstance(rules, list):
+                    for rule in rules:
+                        if isinstance(rule, dict):
+                            # Add category to the rule
+                            rule["category"] = category
+                            rule["uploaded_at"] = datetime.now(timezone.utc).isoformat()
+                            rule["source"] = "pricing_strategies_upload"
+                            rules_to_insert.append(rule)
+            
+            # Also extract metadata and business objectives if present
+            if "metadata" in data:
+                metadata_doc = {
+                    "rule_id": "METADATA",
+                    "name": "Pricing Rules Metadata",
+                    "category": "metadata",
+                    "description": f"Pricing rules version {data['metadata'].get('version', '1.0')}",
+                    **data["metadata"],
                     "uploaded_at": datetime.now(timezone.utc).isoformat(),
                     "source": "pricing_strategies_upload"
                 }
-                rules_to_insert.append(goal_doc)
+                rules_to_insert.append(metadata_doc)
+            
+            if "business_objectives" in data:
+                for goal in data["business_objectives"].get("primary_goals", []):
+                    goal_doc = {
+                        "rule_id": f"GOAL_{goal.get('objective', 'UNKNOWN')}",
+                        "name": f"Business Objective: {goal.get('objective', 'Unknown')}",
+                        "category": "business_objectives",
+                        "description": f"{goal.get('objective')}: {goal.get('target')} via {goal.get('strategy')}",
+                        **goal,
+                        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                        "source": "pricing_strategies_upload"
+                    }
+                    rules_to_insert.append(goal_doc)
+            
+            if "expected_outcomes" in data:
+                outcomes_doc = {
+                    "rule_id": "EXPECTED_OUTCOMES",
+                    "name": "Expected Business Outcomes",
+                    "category": "expected_outcomes",
+                    "description": f"Target revenue increase: {data['expected_outcomes'].get('revenue_increase', {}).get('target', 'N/A')}",
+                    **data["expected_outcomes"],
+                    "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                    "source": "pricing_strategies_upload"
+                }
+                rules_to_insert.append(outcomes_doc)
         
-        if "expected_outcomes" in data:
-            outcomes_doc = {
-                "rule_id": "EXPECTED_OUTCOMES",
-                "name": "Expected Business Outcomes",
-                "category": "expected_outcomes",
-                "description": f"Target revenue increase: {data['expected_outcomes'].get('revenue_increase', {}).get('target', 'N/A')}",
-                **data["expected_outcomes"],
-                "uploaded_at": datetime.now(timezone.utc).isoformat(),
-                "source": "pricing_strategies_upload"
-            }
-            rules_to_insert.append(outcomes_doc)
+        # ====================================================================
+        # Process CSV file
+        # ====================================================================
+        elif filename.endswith(".csv"):
+            try:
+                csv_content = content.decode("utf-8")
+                csv_reader = csv.DictReader(io.StringIO(csv_content))
+                
+                for row in csv_reader:
+                    # Skip empty rows
+                    if not any(row.values()):
+                        continue
+                    
+                    # Parse JSON strings in condition and action columns if present
+                    rule_doc = {
+                        "rule_id": row.get("rule_id", ""),
+                        "name": row.get("name", ""),
+                        "category": row.get("category", "uncategorized"),
+                        "description": row.get("description", ""),
+                        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                        "source": "pricing_strategies_upload"
+                    }
+                    
+                    # Try to parse condition as JSON if it's a string
+                    if "condition" in row and row["condition"]:
+                        try:
+                            rule_doc["condition"] = json.loads(row["condition"])
+                        except (json.JSONDecodeError, TypeError):
+                            rule_doc["condition"] = row["condition"]
+                    
+                    # Try to parse action as JSON if it's a string
+                    if "action" in row and row["action"]:
+                        try:
+                            rule_doc["action"] = json.loads(row["action"])
+                        except (json.JSONDecodeError, TypeError):
+                            rule_doc["action"] = row["action"]
+                    
+                    # Add other columns
+                    for key, value in row.items():
+                        if key not in ["rule_id", "name", "category", "description", "condition", "action"] and value:
+                            rule_doc[key] = value
+                    
+                    rules_to_insert.append(rule_doc)
+                
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid CSV format: {str(e)}"
+                )
         
         if not rules_to_insert:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No valid pricing rules found in the JSON file"
+                detail="No valid pricing rules found in the file"
             )
         
         # Store in MongoDB
@@ -817,6 +876,167 @@ async def upload_pricing_strategies(file: UploadFile = File(...)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error processing pricing strategies: {str(e)}"
+        )
+
+
+@router.get("/pricing-strategies/export")
+async def export_pricing_strategies(
+    format: str = Query(
+        default="json",
+        description="Export format: 'json' or 'csv'",
+        pattern="^(json|csv)$"
+    ),
+    source: Optional[str] = Query(
+        default=None,
+        description="Filter by source (e.g., 'pricing_strategies_upload', 'pipeline_generated')"
+    )
+):
+    """
+    Export pricing strategies from MongoDB in JSON or CSV format.
+    
+    **Query Parameters:**
+    - format: 'json' or 'csv' (default: 'json')
+    - source: Filter by source (optional)
+    
+    **JSON format:**
+    Returns structured JSON with pricing_rules, business_objectives, and metadata
+    
+    **CSV format:**
+    Returns flat CSV with columns: rule_id, name, category, description, condition, action, expected_impact
+    """
+    import json
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+    
+    try:
+        # Get database
+        database = get_database()
+        if database is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection not available"
+            )
+        
+        collection = database["pricing_strategies"]
+        
+        # Build query
+        query = {}
+        if source:
+            query["source"] = source
+        
+        # Fetch all pricing strategies
+        cursor = collection.find(query)
+        strategies = await cursor.to_list(length=None)
+        
+        if not strategies:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No pricing strategies found"
+            )
+        
+        # ====================================================================
+        # Export as JSON
+        # ====================================================================
+        if format.lower() == "json":
+            # Organize by category
+            pricing_rules = {}
+            business_objectives = []
+            metadata = {}
+            expected_outcomes = {}
+            
+            for strategy in strategies:
+                # Remove MongoDB _id field
+                if "_id" in strategy:
+                    del strategy["_id"]
+                
+                category = strategy.get("category", "uncategorized")
+                
+                if category == "business_objectives":
+                    business_objectives.append(strategy)
+                elif category == "metadata":
+                    metadata = strategy
+                elif category == "expected_outcomes":
+                    expected_outcomes = strategy
+                else:
+                    if category not in pricing_rules:
+                        pricing_rules[category] = []
+                    pricing_rules[category].append(strategy)
+            
+            # Build structured JSON
+            export_data = {
+                "metadata": {
+                    "version": metadata.get("version", "1.0"),
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "source": "mongodb_export",
+                    "total_rules": len(strategies)
+                },
+                "pricing_rules": pricing_rules
+            }
+            
+            if business_objectives:
+                export_data["business_objectives"] = {
+                    "primary_goals": business_objectives
+                }
+            
+            if expected_outcomes:
+                export_data["expected_outcomes"] = expected_outcomes
+            
+            return JSONResponse(content=export_data)
+        
+        # ====================================================================
+        # Export as CSV
+        # ====================================================================
+        elif format.lower() == "csv":
+            # Create CSV in memory
+            output = io.StringIO()
+            
+            # Define CSV columns
+            fieldnames = [
+                "rule_id", "name", "category", "description",
+                "condition", "action", "expected_impact",
+                "priority", "target", "strategy", "source", "uploaded_at"
+            ]
+            
+            writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            
+            for strategy in strategies:
+                # Remove MongoDB _id
+                if "_id" in strategy:
+                    del strategy["_id"]
+                
+                # Convert complex fields to JSON strings
+                row = strategy.copy()
+                
+                # Serialize condition and action as JSON strings for CSV
+                if "condition" in row and isinstance(row["condition"], (dict, list)):
+                    row["condition"] = json.dumps(row["condition"])
+                
+                if "action" in row and isinstance(row["action"], (dict, list)):
+                    row["action"] = json.dumps(row["action"])
+                
+                writer.writerow(row)
+            
+            # Get CSV content
+            csv_content = output.getvalue()
+            output.close()
+            
+            # Return as downloadable file
+            return StreamingResponse(
+                iter([csv_content]),
+                media_type="text/csv",
+                headers={
+                    "Content-Disposition": f"attachment; filename=pricing_strategies_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                }
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error exporting pricing strategies: {str(e)}"
         )
 
 

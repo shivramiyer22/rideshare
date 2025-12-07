@@ -283,3 +283,4 @@ async def get_last_run():
         "last_run": runs[0]
     }
 
+

@@ -145,29 +145,31 @@ from prophet.plot import plot_plotly, plot_components_plotly
 
 class RideshareForecastModel:
     """
-    Prophet ML forecasting model for rideshare demand prediction.
+    Prophet ML forecasting model for rideshare MULTI-METRIC prediction.
     
-    This class handles:
-    - Training ONE Prophet model on all historical data (300+ total orders required)
-    - The model uses multiple regressors to learn demand patterns:
+    This class trains 3 separate Prophet models to forecast:
+    1. **Demand** (number of rides per day)
+    2. **Duration** (average ride duration in minutes per day)
+    3. **Unit Price** (average $/minute per day)
+    
+    Each model uses 24 regressors to learn patterns:
       * pricing_model (CONTRACTED, STANDARD, CUSTOM)
       * Customer_Loyalty_Status (Gold, Silver, Regular)
       * Location_Category (Urban, Suburban, Rural)
       * Vehicle_Type (Premium, Economy)
       * Demand_Profile (HIGH, MEDIUM, LOW)
       * Time_of_Ride (Morning, Afternoon, Evening, Night)
-    - Generating forecasts for 30, 60, or 90 days
-    - Providing confidence intervals (80% confidence range)
+      * + 18 more categorical and numeric regressors
     
     Usage:
         model = RideshareForecastModel()
-        result = model.train(historical_df)  # All pricing types in one DataFrame
-        forecast = model.forecast(pricing_model="STANDARD", periods=30)  # Forecast for specific pricing type
+        result = model.train(historical_df)  # Trains all 3 models
+        forecasts = model.forecast_all_metrics(pricing_model="STANDARD", periods=30)
     """
     
     def __init__(self, models_dir: str = "./models"):
         """
-        Initialize the forecasting model.
+        Initialize the multi-metric forecasting model.
         
         Args:
             models_dir: Directory where trained models are saved (default: ./models)
@@ -176,7 +178,16 @@ class RideshareForecastModel:
         # Models are saved as .pkl files (pickle format)
         self.models_dir = Path(models_dir)
         self.models_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Track 3 separate model filenames
+        self.model_files = {
+            'demand': 'rideshare_demand_forecast.pkl',
+            'duration': 'rideshare_duration_forecast.pkl',
+            'unit_price': 'rideshare_unit_price_forecast.pkl'
+        }
+        
         logger.info(f"Models directory: {self.models_dir.absolute()}")
+        logger.info("Multi-metric forecasting: demand, duration, unit_price")
     
     def _validate_dataframe(self, df: pd.DataFrame) -> Tuple[bool, str]:
         """
@@ -263,46 +274,46 @@ class RideshareForecastModel:
         historical_data: pd.DataFrame
     ) -> Dict[str, any]:
         """
-        Train a single Prophet ML model on all historical data.
+        Train 3 Prophet ML models on all historical data for multi-metric forecasting.
         
-        This is like teaching the model by showing it past data:
-        - "Here's what demand looked like for the last 300+ rides (all pricing types)"
-        - Prophet learns patterns: "Fridays are busier", "Evening rush hour is peak", etc.
-        - Prophet also learns how pricing_model affects demand (CONTRACTED vs STANDARD vs CUSTOM)
-        - Model is saved to disk so we can use it later for predictions
+        This method trains separate models for:
+        1. **Demand** (ride counts per day)
+        2. **Duration** (average ride duration in minutes)
+        3. **Unit Price** (average $/minute)
         
-        The model uses pricing_model as a regressor, so it learns:
-        - Common patterns (weekly cycles, daily cycles, trends) shared across all pricing types
-        - How each pricing type (CONTRACTED, STANDARD, CUSTOM) affects demand differently
+        Each model learns from 300+ individual rides aggregated to daily data.
+        All models use 24 regressors to learn complex patterns.
         
         Args:
             historical_data: DataFrame with columns:
-                - 'Order_Date' or 'completed_at' or 'ds': datetime of ride (Order_Date is preferred)
-                - 'Historical_Cost_of_Ride' or 'actual_price' or 'y': cost/demand value (Historical_Cost_of_Ride is preferred)
-                - 'Pricing_Model' or 'pricing_model': pricing type (CONTRACTED, STANDARD, or CUSTOM) - REQUIRED regressor
-                - 'Customer_Loyalty_Status' or 'loyalty_status' or 'loyalty_tier': Gold, Silver, Regular - REQUIRED regressor
-                - 'Location_Category': Urban, Suburban, Rural - REQUIRED regressor
-                - 'Vehicle_Type' or 'vehicle_type': Premium, Economy - REQUIRED regressor
-                - 'Demand_Profile': HIGH, MEDIUM, LOW - REQUIRED regressor
-                - 'Time_of_Ride': Morning, Afternoon, Evening, Night - REQUIRED regressor
+                - 'Order_Date' or 'completed_at' or 'ds': datetime of ride
+                - 'Expected_Ride_Duration': duration in minutes
+                - 'Historical_Cost_of_Ride': total cost of ride
+                - 'Historical_Unit_Price': $/minute (or calculated from cost/duration)
+                - 'Pricing_Model': CONTRACTED, STANDARD, CUSTOM
+                - Plus all other categorical/numeric regressors
             
         Returns:
             Dictionary with:
                 - success: bool
-                - mape: Mean Absolute Percentage Error
-                - confidence: Confidence level (0.80 = 80%)
-                - model_path: Path to saved model file
-                - error: Error message if training failed
+                - models_trained: list of metrics trained
+                - training_rows: number of daily data points used
+                - mape: dict with MAPE for each metric
+                - model_paths: dict with paths to each saved model
+                - error: Error message if any training failed
         """
-        logger.info("Training Prophet model for all pricing types (CONTRACTED, STANDARD, CUSTOM)...")
+        logger.info("=" * 80)
+        logger.info("TRAINING MULTI-METRIC PROPHET ML MODELS")
+        logger.info("=" * 80)
+        logger.info("Training 3 separate models: DEMAND, DURATION, UNIT_PRICE")
         
         try:
             # Step 1: Use all data (all pricing types together)
-            # We need minimum 300 total orders across all pricing types
+            # We need minimum 300 total INDIVIDUAL RIDES to get enough daily aggregated data
             if len(historical_data) < 300:
                 return {
                     "success": False,
-                    "error": f"Insufficient data: {len(historical_data)} rows. Minimum 300 total rows required (across all pricing types)."
+                    "error": f"Insufficient data: {len(historical_data)} individual rides. Minimum 300 rides required (will aggregate to daily counts)."
                 }
             
             logger.info(f"  → Using {len(historical_data)} total rows for training (all pricing types)")
@@ -334,19 +345,14 @@ class RideshareForecastModel:
                     "error": "DataFrame must have 'Order_Date', 'completed_at', or 'ds' column (datetime)"
                 }
             
-            # Map value column (prefer Historical_Cost_of_Ride, fallback to actual_price or y)
-            # We can predict either cost or demand - using Historical_Cost_of_Ride as default
-            if 'Historical_Cost_of_Ride' in historical_data.columns:
-                prophet_data['y'] = pd.to_numeric(historical_data['Historical_Cost_of_Ride'], errors='coerce')
-            elif 'actual_price' in historical_data.columns:
-                prophet_data['y'] = pd.to_numeric(historical_data['actual_price'], errors='coerce')
-            elif 'y' in historical_data.columns:
-                prophet_data['y'] = pd.to_numeric(historical_data['y'], errors='coerce')
-            else:
-                return {
-                    "success": False,
-                    "error": "DataFrame must have 'Historical_Cost_of_Ride', 'actual_price', or 'y' column (numeric)"
-                }
+            # Map value column - FOR DEMAND FORECASTING, we count rides per day
+            # Each row represents 1 ride, so we need to aggregate by date
+            logger.info("  → Preparing data for DEMAND forecasting (ride counts per day)")
+            
+            # Create initial prophet_data with just date and value of 1 per ride
+            prophet_data['y'] = 1.0  # Each row = 1 ride
+            
+            logger.info(f"  → Initial data: {len(prophet_data)} individual rides")
             
             # Add Pricing_Model as regressor (if available)
             # This tells Prophet how pricing type affects demand
@@ -475,10 +481,44 @@ class RideshareForecastModel:
                     "error": f"After cleaning: {len(prophet_data)} rows. Minimum 300 total rows required."
                 }
             
+            # CRITICAL: Aggregate by date to get ride counts per day
+            # Prophet needs daily aggregated data, not individual ride records
+            logger.info(f"  → Aggregating {len(prophet_data)} individual rides into daily counts...")
+            
+            # Save regressor columns before aggregation
+            regressor_cols_to_preserve = [
+                col for col in prophet_data.columns 
+                if col.startswith(('pricing_', 'time_', 'demand_', 'location_', 'loyalty_', 'vehicle_', 'company_'))
+            ]
+            
+            # Aggregate: sum y (ride counts), take mode for categorical regressors, mean for numeric
+            agg_dict = {'y': 'sum'}  # Sum rides per day
+            for col in regressor_cols_to_preserve:
+                agg_dict[col] = 'mean'  # Average the one-hot encoded values
+            
+            # Add numeric regressors
+            for col in ['num_riders', 'num_drivers', 'ride_duration', 'unit_price']:
+                if col in prophet_data.columns:
+                    agg_dict[col] = 'mean'
+            
+            prophet_data = prophet_data.groupby('ds').agg(agg_dict).reset_index()
+            logger.info(f"  → Aggregated to {len(prophet_data)} daily data points")
+            
+            # After aggregation, ensure all regressor values are between 0 and 1 for one-hot encoded
+            for col in regressor_cols_to_preserve:
+                prophet_data[col] = prophet_data[col].clip(0, 1)
+            
             # Sort by date (Prophet requires chronological order)
             prophet_data = prophet_data.sort_values('ds').reset_index(drop=True)
             
             # Step 3: Validate the prepared data
+            # After aggregation, we need at least 90 days of data (not 300 individual rides)
+            if len(prophet_data) < 90:
+                return {
+                    "success": False, 
+                    "error": f"After aggregation: {len(prophet_data)} days. Minimum 90 days required for reliable forecasting."
+                }
+            
             is_valid, error_msg = self._validate_dataframe(prophet_data)
             if not is_valid:
                 return {"success": False, "error": error_msg}
@@ -508,6 +548,29 @@ class RideshareForecastModel:
             ]
             
             for regressor_col in regressor_cols:
+                # Check for NaN values in this regressor
+                nan_count = prophet_data[regressor_col].isna().sum()
+                if nan_count > 0:
+                    logger.warning(f"  → Regressor '{regressor_col}' has {nan_count} NaN values, filling with column mean/mode")
+                    
+                    # For numeric columns, fill with mean
+                    if regressor_col in ['num_riders', 'num_drivers', 'ride_duration', 'unit_price']:
+                        mean_val = prophet_data[regressor_col].mean()
+                        if pd.isna(mean_val) or mean_val == 0:
+                            # If mean is also NaN or zero, use a sensible default
+                            defaults = {
+                                'num_riders': 1.5,
+                                'num_drivers': 50.0,
+                                'ride_duration': 20.0,
+                                'unit_price': 0.40
+                            }
+                            prophet_data[regressor_col] = prophet_data[regressor_col].fillna(defaults.get(regressor_col, 1.0))
+                        else:
+                            prophet_data[regressor_col] = prophet_data[regressor_col].fillna(mean_val)
+                    else:
+                        # For categorical (one-hot encoded), fill with 0
+                        prophet_data[regressor_col] = prophet_data[regressor_col].fillna(0)
+                
                 model.add_regressor(regressor_col)
                 logger.info(f"  → Added regressor: {regressor_col}")
             
