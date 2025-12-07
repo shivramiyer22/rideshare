@@ -34,27 +34,6 @@ response_cache: Dict[str, tuple[str, datetime]] = {}
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
 
-def clean_response_formatting(text: str) -> str:
-    """
-    Clean up response formatting to ensure consistency.
-    - Replace ### with ## (no sub-headers)
-    - Ensure consistent bullet points
-    - Remove numbered lists
-    """
-    import re
-    
-    # Replace ### with ## (no sub-headers allowed)
-    text = re.sub(r'^###\s+', '## ', text, flags=re.MULTILINE)
-    
-    # Replace numbered lists with bullet points
-    text = re.sub(r'^\d+\.\s+', '• ', text, flags=re.MULTILINE)
-    
-    # Ensure consistent spacing after headers
-    text = re.sub(r'^##\s+([^\n]+)\n(?!\n)', r'## \1\n\n', text, flags=re.MULTILINE)
-    
-    return text.strip()
-
-
 @router.post("/clear-cache")
 async def clear_cache():
     """Clear the chatbot response cache."""
@@ -92,58 +71,70 @@ async def save_chat_message(user_id: str, thread_id: str, role: str, content: st
 
 def clean_response_formatting(response: str) -> str:
     """
-    Clean and enforce consistent response formatting.
-    - Convert ### to ##
-    - Convert ## with numbers (## 1. or ## 2.) to bullet points
-    - Ensure proper spacing
-    - Remove excessive blank lines
+    Clean and enforce consistent, highly readable formatting.
+    
+    Makes responses easy to scan with:
+    - Clear section headers (##)
+    - Consistent bullet points (•)
+    - Proper spacing between sections
+    - Bold numbers/metrics
     """
     import re
     
-    # Replace ### with ## (no sub-headers)
+    # 1. Replace ### and #### with ## (max 2 levels)
+    response = re.sub(r'^####\s+', '## ', response, flags=re.MULTILINE)
     response = re.sub(r'^###\s+', '## ', response, flags=re.MULTILINE)
     
-    # Replace numbered sub-headers like "## 1. Title" with "• **Title**"
+    # 2. Replace numbered headers (## 1. Title) with bullet points (• Title)
     response = re.sub(r'^##\s+\d+\.\s+\*\*(.+?)\*\*', r'• **\1**', response, flags=re.MULTILINE)
     response = re.sub(r'^##\s+\d+\.\s+(.+?)$', r'• **\1**', response, flags=re.MULTILINE)
     
-    # Ensure single blank line between sections (no more than 2 consecutive newlines)
+    # 3. Replace numbered lists (1., 2., 3.) with bullets (•)
+    response = re.sub(r'^\d+\.\s+', '• ', response, flags=re.MULTILINE)
+    
+    # 4. Ensure consistent bullet points (convert -, *, → to •)
+    response = re.sub(r'^[\s]*[-*→]\s+', '• ', response, flags=re.MULTILINE)
+    
+    # 5. Fix inline bullets: ensure each bullet is on its own line
+    # Match: "• Text • Text" and split into separate lines
+    response = re.sub(r'(\s+)(•\s+)', r'\n\2', response)
+    
+    # 6. Ensure ONE blank line after headers for readability
+    response = re.sub(r'(^##\s+.+)$\n(?!\n)', r'\1\n\n', response, flags=re.MULTILINE)
+    
+    # 7. Ensure blank line before headers (except at start)
+    response = re.sub(r'([^\n])\n(^##\s+)', r'\1\n\n\2', response, flags=re.MULTILINE)
+    
+    # 8. Ensure each bullet point is on its own line (no inline bullets)
+    # This catches bullets that are stuck together on the same line
+    lines = response.split('\n')
+    formatted_lines = []
+    for line in lines:
+        # If line contains multiple bullets, split them
+        if line.count('•') > 1:
+            # Split by bullet and create separate lines
+            parts = line.split('•')
+            for i, part in enumerate(parts):
+                if i == 0 and part.strip():
+                    # First part (before first bullet)
+                    formatted_lines.append(part.rstrip())
+                elif part.strip():
+                    # Subsequent parts (after bullets)
+                    formatted_lines.append('• ' + part.strip())
+        else:
+            formatted_lines.append(line)
+    response = '\n'.join(formatted_lines)
+    
+    # 9. Remove excessive blank lines (max 2 consecutive newlines)
     response = re.sub(r'\n{3,}', '\n\n', response)
     
-    # Remove trailing whitespace from lines
+    # 10. Remove trailing whitespace from lines
     response = '\n'.join(line.rstrip() for line in response.split('\n'))
     
-    # Remove leading/trailing blank lines
+    # 11. Remove leading/trailing blank lines
     response = response.strip()
     
     return response
-
-
-def clean_response_formatting(response: str) -> str:
-    """
-    Clean and enforce consistent formatting in agent responses.
-    
-    Rules:
-    - Convert ### to ##
-    - Ensure blank line after headers
-    - Remove extra blank lines
-    - Ensure consistent bullet points
-    """
-    import re
-    
-    # Replace ### with ##
-    response = re.sub(r'^###\s+', '## ', response, flags=re.MULTILINE)
-    
-    # Ensure ONE blank line after headers (## Header)
-    response = re.sub(r'(^##\s+.+)$(?!\n\n)', r'\1\n', response, flags=re.MULTILINE)
-    
-    # Remove more than 2 consecutive newlines
-    response = re.sub(r'\n{3,}', '\n\n', response)
-    
-    # Ensure bullet points use • consistently
-    response = re.sub(r'^[\s]*[-*]\s+', '• ', response, flags=re.MULTILINE)
-    
-    return response.strip()
 
 
 class ChatMessage(BaseModel):

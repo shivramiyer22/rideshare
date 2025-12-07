@@ -57,9 +57,11 @@ export const uploadAPI = {
 
 // ML API
 export const mlAPI = {
-  train: () => api.post('/api/ml/train'),
+  train: () => api.post('/api/v1/ml/train'),
   forecast: (horizon: '30d' | '60d' | '90d', pricingModel: string) =>
-    api.get(`/api/forecast/${horizon}`, { params: { pricing_model: pricingModel } }),
+    api.get(`/api/v1/ml/forecast/${horizon}`, { params: { pricing_model: pricingModel } }),
+  forecastMulti: (horizon: '30d' | '60d' | '90d') =>
+    api.get(`/api/v1/ml/forecast-multi/${horizon}`),
 };
 
 // Analytics API
@@ -68,6 +70,10 @@ export const analyticsAPI = {
   kpis: () => api.get('/api/analytics/kpis'),
   topRoutes: () => api.get('/api/analytics/top-routes'),
   customerDistribution: () => api.get('/api/analytics/customer-distribution'),
+  hwcoForecast: (pricingModel: string = 'STANDARD', periods: number = 30) =>
+    api.get('/api/v1/analytics/hwco-forecast-aggregate', {
+      params: { pricing_model: pricingModel, periods }
+    }),
 };
 
 // Market Signals API

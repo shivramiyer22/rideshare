@@ -377,3 +377,4 @@ def convert_report_to_csv(report: Dict[str, Any]) -> str:
     except Exception as e:
         logger.error(f"Error converting report to CSV: {e}")
         return f"Error generating CSV: {str(e)}"
+

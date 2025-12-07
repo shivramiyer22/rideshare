@@ -9,7 +9,8 @@ Supports both JSON and CSV output formats.
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse, JSONResponse
-from typing import Optional
+from typing import Optional, Dict, Any
+from datetime import datetime, timedelta
 import io
 import logging
 
@@ -29,6 +30,13 @@ router = APIRouter(
     tags=["reports"],
     responses={404: {"description": "Not found"}}
 )
+
+# ============================================================================
+# SERVER-SIDE CACHE (to speed up repeated requests)
+# ============================================================================
+_report_cache: Dict[str, Any] = {}
+_cache_timestamp: Dict[str, datetime] = {}
+CACHE_DURATION_MINUTES = 30  # Cache reports for 30 minutes
 
 
 @router.get(
@@ -70,6 +78,32 @@ async def get_segment_dynamic_pricing_analysis(
     - CSV: Downloadable CSV file with all segment data in tabular format
     """
     try:
+        # Create cache key
+        cache_key = pipeline_result_id or "latest"
+        
+        # Check cache first
+        if cache_key in _report_cache and cache_key in _cache_timestamp:
+            cache_age = datetime.utcnow() - _cache_timestamp[cache_key]
+            if cache_age < timedelta(minutes=CACHE_DURATION_MINUTES):
+                logger.info(f"✅ Using cached report (age: {cache_age.total_seconds():.1f}s)")
+                report = _report_cache[cache_key]
+                
+                # Return based on requested format
+                if format.lower() == "csv":
+                    csv_content = convert_report_to_csv(report)
+                    return StreamingResponse(
+                        iter([csv_content]),
+                        media_type="text/csv",
+                        headers={
+                            "Content-Disposition": f"attachment; filename=segment_dynamic_pricing_report_{report['metadata']['generated_at']}.csv"
+                        }
+                    )
+                else:
+                    return JSONResponse(content=report)
+        
+        # Cache miss or expired - generate fresh report
+        logger.info(f"🔄 Generating fresh report (cache miss or expired)")
+        
         # Generate the report
         report = generate_segment_dynamic_pricing_report(pipeline_result_id)
         
@@ -79,6 +113,11 @@ async def get_segment_dynamic_pricing_analysis(
                 status_code=404,
                 detail=report.get("error", "Error generating report")
             )
+        
+        # Cache the report
+        _report_cache[cache_key] = report
+        _cache_timestamp[cache_key] = datetime.utcnow()
+        logger.info(f"💾 Report cached for {CACHE_DURATION_MINUTES} minutes")
         
         # Return based on requested format
         if format.lower() == "csv":
@@ -199,3 +238,4 @@ async def get_segment_dynamic_pricing_summary(
             status_code=500,
             detail=f"Error generating summary: {str(e)}"
         )
+

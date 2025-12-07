@@ -84,7 +84,7 @@ const DynamicPricingArchitectureV7 = () => {
                     <h3 className="font-bold text-purple-900 mb-2">6 AI AGENTS ARCHITECTURE</h3>
                     <ul className="list-disc list-inside space-y-1 text-gray-700 text-sm">
                       <li>✅ Data Ingestion Agent - MongoDB → ChromaDB embeddings (monitors change streams)</li>
-                      <li>✅ Chatbot Orchestrator Agent - Routes queries to worker agents</li>
+                      <li>✅ Chatbot Orchestrator Agent - Routes queries to worker agents</li>ok
                       <li>✅ Analysis Agent - Business intelligence (analyzes n8n ingested data)</li>
                       <li>✅ Pricing Agent - Dynamic price optimization</li>
                       <li>✅ Forecasting Agent - Prophet ML predictions (uses n8n data)</li>

@@ -11,8 +11,10 @@ import {
   Settings,
   X,
   Upload,
+  RefreshCw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useGlobalData } from '@/contexts/GlobalDataContext';
 
 export type TabType =
   | 'overview'
@@ -41,6 +43,8 @@ const menuItems = [
 ];
 
 export function Sidebar({ activeTab, onTabChange, isOpen = true, onClose }: SidebarProps) {
+  const { refreshData, isRefreshing } = useGlobalData();
+
   return (
     <>
       {/* Mobile Overlay */}
@@ -107,6 +111,23 @@ export function Sidebar({ activeTab, onTabChange, isOpen = true, onClose }: Side
           );
         })}
       </nav>
+
+      {/* Refresh Data Button */}
+      <div className="px-4 pb-2">
+        <button 
+          onClick={refreshData}
+          disabled={isRefreshing}
+          className={cn(
+            "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors",
+            "bg-primary text-primary-foreground hover:bg-primary/90",
+            "disabled:opacity-50 disabled:cursor-not-allowed",
+            isRefreshing && "animate-pulse"
+          )}
+        >
+          <RefreshCw size={20} className={isRefreshing ? 'animate-spin' : ''} />
+          {isRefreshing ? 'Refreshing...' : 'Refresh Data'}
+        </button>
+      </div>
 
       {/* Settings */}
       <div className="p-4 border-t border-border">

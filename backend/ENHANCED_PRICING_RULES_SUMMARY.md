@@ -229,3 +229,4 @@
 **Last Updated**: December 3, 2025  
 **Git Commit**: `13fc9b4` (feat: enhanced-pricing-rules-with-events-and-news)  
 **Integration**: Full n8n data pipeline connected ✅
+
