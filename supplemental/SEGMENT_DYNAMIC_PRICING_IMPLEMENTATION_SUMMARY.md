@@ -330,3 +330,4 @@ curl -X POST http://localhost:8000/api/v1/chatbot/chat \
 - ✅ JSON and CSV format support for all endpoints
 - ✅ Per-segment persistence in MongoDB
 - ✅ Chatbot queryable via natural language
+

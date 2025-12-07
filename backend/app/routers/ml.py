@@ -2,88 +2,50 @@
 Prophet ML Training and Forecasting Endpoints
 
 This module provides endpoints for:
-1. Training Prophet ML models on historical data
+1. Training Prophet ML models on historical data (3 models: demand, duration, unit_price)
 2. Generating forecasts for 30, 60, and 90 days
 
 Prophet ML is the ONLY forecasting method (NO moving averages).
 """
 from fastapi import APIRouter, HTTPException, Query
 from typing import Dict, Any, Literal
-from app.forecasting_ml import RideshareForecastModel
+from app.forecasting_ml_multi import MultiMetricForecastModel
 from app.database import get_database
 import pandas as pd
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ml", tags=["ml"])
 
 # Global model instance
-forecast_model = RideshareForecastModel()
+forecast_model = MultiMetricForecastModel()
 
 
 @router.post("/train")
 async def train_prophet_models() -> Dict[str, Any]:
     """
-    Train Prophet ML model with 24 regressors on historical data from MongoDB.
+    Train 3 Prophet ML models on historical data from MongoDB.
     
     This endpoint:
     1. Reads historical_rides + competitor_prices from MongoDB (300+ combined rows required)
-    2. Trains a single Prophet model with multi-dimensional forecasting
-    3. Uses 24 regressors (20 categorical + 4 numeric) for accurate predictions
-    4. Saves model to models/ directory
-    5. Returns training metrics
+    2. Trains 3 separate Prophet models:
+       - **Demand Model**: Forecasts ride counts per day
+       - **Duration Model**: Forecasts average ride duration per day
+       - **Unit Price Model**: Forecasts average $/minute per day
+    3. Saves all 3 models to models/ directory
+    4. Returns training metrics
     
-    The 24 Regressors:
-    
-    **20 Categorical Regressors:**
-    - Location_Category (Urban/Suburban/Rural)
-    - Customer_Loyalty_Status (Gold/Silver/Regular)
-    - Vehicle_Type (Economy/Premium)
-    - Pricing_Model (STANDARD/SURGE/CONTRACTED/CUSTOM)
-    - Hour (0-23)
-    - DayOfWeek (0-6)
-    - Month (1-12)
-    - IsWeekend (0/1)
-    - IsRushHour (0/1)
-    - IsHoliday (0/1)
-    - Weather_Conditions (Clear/Rain/Snow/etc)
-    - Traffic_Level (Low/Medium/High)
-    - Event_Type (None/Sports/Concert/etc)
-    - Competitor_Pricing_Strategy
-    - Driver_Availability_Level (Low/Medium/High)
-    - Route_Popularity (Low/Medium/High)
-    - Payment_Method (Card/Cash/Digital)
-    - Booking_Channel (App/Web/Phone)
-    - Service_Class (Standard/Premium)
-    - Demand_Profile (HIGH/MEDIUM/LOW)
-    
-    **4 Numeric Regressors:**
-    - num_riders (Number_Of_Riders)
-    - num_drivers (Number_of_Drivers)
-    - ride_duration (Expected_Ride_Duration in minutes)
-    - unit_price (Historical_Unit_Price in $/minute)
-    
-    The model learns:
-    - Weekly/daily patterns (seasonality)
-    - Hourly rush patterns
-    - Weather and traffic impacts
-    - Pricing model effects on demand
-    - Loyalty tier behavior differences
-    - Location-specific trends
-    - Vehicle type demand patterns
+    Each model learns weekly patterns and trends from historical data.
     
     Returns:
         Dictionary with:
             - success: bool
-            - mape: Mean Absolute Percentage Error
-            - confidence: 0.80 (80% confidence intervals)
-            - model_path: Path to saved model
-            - training_rows: Number of rows used for training
-            - data_sources: Breakdown of HWCO vs competitor data
-            - error: Error message if training failed
+            - models_trained: list of metrics ['demand', 'duration', 'unit_price']
+            - training_rows: dict with rows per model
+            - message: Success/error message
     """
     try:
         # Get database connection
@@ -94,11 +56,6 @@ async def train_prophet_models() -> Dict[str, Any]:
                 detail="Database connection not available"
             )
         
-        # ================================================================
-        # Load BOTH HWCO historical data AND competitor data for training
-        # This improves forecast accuracy by learning market-wide patterns
-        # ================================================================
-        
         # Load HWCO historical data
         hwco_collection = database["historical_rides"]
         hwco_cursor = hwco_collection.find({})
@@ -106,7 +63,7 @@ async def train_prophet_models() -> Dict[str, Any]:
         hwco_count = len(hwco_records)
         logger.info(f"Loaded {hwco_count} HWCO historical records")
         
-        # Add source identifier to HWCO records
+        # Add source identifier
         for record in hwco_records:
             record["Rideshare_Company"] = "HWCO"
         
@@ -117,7 +74,6 @@ async def train_prophet_models() -> Dict[str, Any]:
         competitor_count = len(competitor_records)
         logger.info(f"Loaded {competitor_count} competitor records")
         
-        # Add source identifier to competitor records
         for record in competitor_records:
             record["Rideshare_Company"] = "COMPETITOR"
         
@@ -129,50 +85,15 @@ async def train_prophet_models() -> Dict[str, Any]:
         if total_count < 300:
             raise HTTPException(
                 status_code=400,
-                detail=f"Insufficient combined data: {total_count} rows. Minimum 300 total rows required (HWCO: {hwco_count}, Competitor: {competitor_count})."
+                detail=f"Insufficient data: {total_count} rides. Minimum 300 rides required (HWCO: {hwco_count}, Competitor: {competitor_count})."
             )
         
         # Convert to DataFrame
         df = pd.DataFrame(records)
         
-        # Ensure required columns exist (support both old and new field names)
-        has_date = 'Order_Date' in df.columns or 'completed_at' in df.columns or 'ds' in df.columns
-        has_price = 'Historical_Cost_of_Ride' in df.columns or 'actual_price' in df.columns or 'y' in df.columns
-        
-        if not has_date:
-            raise HTTPException(
-                status_code=400,
-                detail="Missing required column: 'Order_Date', 'completed_at', or 'ds' (datetime)"
-            )
-        
-        if not has_price:
-            raise HTTPException(
-                status_code=400,
-                detail="Missing required column: 'Historical_Cost_of_Ride', 'actual_price', or 'y' (numeric)"
-            )
-        
-        # Calculate pricing_model breakdown (optional enhancement)
-        # Support both new and old field names
-        pricing_model_breakdown = {}
-        pricing_col = None
-        if 'Pricing_Model' in df.columns:
-            pricing_col = 'Pricing_Model'
-        elif 'pricing_model' in df.columns:
-            pricing_col = 'pricing_model'
-        
-        if pricing_col:
-            pricing_model_counts = df[pricing_col].value_counts().to_dict()
-            pricing_model_breakdown = {
-                "CONTRACTED": pricing_model_counts.get("CONTRACTED", 0),
-                "STANDARD": pricing_model_counts.get("STANDARD", 0),
-                "CUSTOM": pricing_model_counts.get("CUSTOM", 0)
-            }
-        
-        # Train the model synchronously
-        # Training takes ~15-30 seconds for 2000 rows, which is acceptable
-        # Using run_in_executor caused CancelledError issues
-        logger.info("Starting model training (synchronous)...")
-        result = forecast_model.train(df)
+        # Train all 3 models
+        logger.info("Starting multi-metric Prophet ML training...")
+        result = forecast_model.train_all(df)
         
         if not result.get("success", False):
             raise HTTPException(
@@ -180,7 +101,7 @@ async def train_prophet_models() -> Dict[str, Any]:
                 detail=result.get("error", "Training failed")
             )
         
-        logger.info("Training successful, preparing response...")
+        logger.info("Training successful!")
         
         # Update training metadata in MongoDB
         try:
@@ -190,10 +111,10 @@ async def train_prophet_models() -> Dict[str, Any]:
                 {
                     "$set": {
                         "timestamp": datetime.utcnow(),
-                        "training_rows": result.get("training_rows", 0),
+                        "total_rides": total_count,
                         "hwco_rows": hwco_count,
                         "competitor_rows": competitor_count,
-                        "mape": result.get("mape", 0.0),
+                        "models_trained": result.get("models_trained", []),
                         "data_sources": ["historical_rides", "competitor_prices"]
                     }
                 },
@@ -203,27 +124,19 @@ async def train_prophet_models() -> Dict[str, Any]:
         except Exception as e:
             logger.warning(f"Failed to update training metadata: {e}")
         
-        # Build response with data source breakdown
+        # Build response
         response = {
             "success": True,
-            "mape": result.get("mape", 0.0),
-            "confidence": result.get("confidence", 0.80),
-            "model_path": result.get("model_path", ""),
-            "training_rows": result.get("training_rows", 0),
+            "models_trained": result.get("models_trained", []),
+            "training_rows": result.get("training_rows", {}),
             "data_sources": {
                 "hwco_rows": hwco_count,
                 "competitor_rows": competitor_count,
-                "total_rows": total_count,
-                "collections": ["historical_rides", "competitor_prices"]
+                "total_rows": total_count
             },
-            "message": f"Model trained successfully on {result.get('training_rows', 0)} combined rows (HWCO: {hwco_count}, Competitor: {competitor_count})"
+            "message": result.get("message", "Training complete")
         }
         
-        # Add pricing_model breakdown if we have the data
-        if pricing_model_breakdown:
-            response["pricing_model_breakdown"] = pricing_model_breakdown
-        
-        logger.info(f"Returning training response: success={response.get('success')}, rows={response.get('training_rows')}")
         return response
         
     except HTTPException:
@@ -231,7 +144,7 @@ async def train_prophet_models() -> Dict[str, Any]:
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error training model: {str(e)}"
+            detail=f"Error training models: {str(e)}"
         )
 
 
@@ -421,3 +334,134 @@ async def _generate_forecast(pricing_model: str, periods: int) -> Dict[str, Any]
         )
 
 
+@router.get("/forecast-multi/{horizon}")
+async def forecast_multi_metrics(
+    horizon: Literal['30d', '60d', '90d']
+) -> Dict[str, Any]:
+    """
+    Generate multi-metric forecasts using trained Prophet ML models.
+    
+    This endpoint forecasts ALL 3 metrics simultaneously:
+    - Demand (ride counts per day)
+    - Duration (average minutes per ride)
+    - Unit Price (average $/minute)
+    
+    Args:
+        horizon: Forecast period ('30d', '60d', or '90d')
+    
+    Returns:
+        Dictionary with:
+            - success: bool
+            - horizon: forecast period
+            - daily_forecasts: list of dicts with all 3 metrics per day
+            - summary: aggregate statistics
+    """
+    try:
+        # Parse periods
+        periods = int(horizon[:-1])  # '30d' -> 30
+        
+        # Check if models exist
+        model_files_exist = all(
+            (forecast_model.models_dir / forecast_model.model_files[metric]).exists()
+            for metric in ['demand', 'duration', 'unit_price']
+        )
+        
+        if not model_files_exist:
+            raise HTTPException(
+                status_code=400,
+                detail="Models not trained yet. Please train using POST /api/v1/ml/train"
+            )
+        
+        # Load historical data to get regressor means for forecasting
+        database = get_database()
+        historical_df = None
+        
+        if database is not None:
+            try:
+                # Load recent historical data for regressor calculation
+                hwco_collection = database["historical_rides"]
+                hwco_cursor = hwco_collection.find({}).limit(1000)  # Use recent 1000 rides
+                hwco_records = await hwco_cursor.to_list(length=1000)
+                
+                if hwco_records:
+                    for record in hwco_records:
+                        record["Rideshare_Company"] = "HWCO"
+                    historical_df = pd.DataFrame(hwco_records)
+                    logger.info(f"Loaded {len(historical_df)} historical records for regressor calculation")
+            except Exception as e:
+                logger.warning(f"Could not load historical data for regressors: {e}")
+        
+        # Generate forecasts for all 3 metrics with regressors
+        logger.info(f"Generating {periods}-day forecast for all metrics with 24 regressors...")
+        forecasts = forecast_model.forecast_all(periods=periods, historical_data=historical_df)
+        
+        if forecasts is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate forecasts"
+            )
+        
+        # Combine forecasts into daily records
+        daily_forecasts = []
+        for day in range(periods):
+            date_str = forecasts['demand'].iloc[day]['ds'].strftime('%Y-%m-%d')
+            
+            demand_val = forecasts['demand'].iloc[day]['yhat']
+            duration_val = forecasts['duration'].iloc[day]['yhat']
+            unit_price_val = forecasts['unit_price'].iloc[day]['yhat']
+            
+            # Calculate revenue = rides * duration * unit_price
+            revenue_val = demand_val * duration_val * unit_price_val
+            
+            daily_forecasts.append({
+                "date": date_str,
+                "day_number": day + 1,
+                "predicted_rides": round(max(0, demand_val), 2),
+                "predicted_duration": round(max(0, duration_val), 2),
+                "predicted_unit_price": round(max(0, unit_price_val), 4),
+                "predicted_revenue": round(max(0, revenue_val), 2),
+                "lower_bound_rides": round(max(0, forecasts['demand'].iloc[day]['yhat_lower']), 2),
+                "upper_bound_rides": round(forecasts['demand'].iloc[day]['yhat_upper'], 2)
+            })
+        
+        # Calculate summary statistics
+        total_rides = sum(d['predicted_rides'] for d in daily_forecasts)
+        avg_rides_per_day = total_rides / periods
+        avg_duration = sum(d['predicted_duration'] for d in daily_forecasts) / periods
+        avg_unit_price = sum(d['predicted_unit_price'] for d in daily_forecasts) / periods
+        total_revenue = sum(d['predicted_revenue'] for d in daily_forecasts)
+        
+        # Calculate trend
+        first_week_rides = sum(d['predicted_rides'] for d in daily_forecasts[:7]) / 7
+        last_week_rides = sum(d['predicted_rides'] for d in daily_forecasts[-7:]) / 7
+        trend_direction = "increasing" if last_week_rides > first_week_rides * 1.02 else ("decreasing" if last_week_rides < first_week_rides * 0.98 else "stable")
+        
+        summary = {
+            "total_predicted_rides": round(total_rides, 2),
+            "avg_rides_per_day": round(avg_rides_per_day, 2),
+            "avg_duration_minutes": round(avg_duration, 2),
+            "avg_unit_price_per_minute": round(avg_unit_price, 4),
+            "total_predicted_revenue": round(total_revenue, 2),
+            "trend": trend_direction,
+            "confidence_score": 0.80,
+            "forecast_period_days": periods
+        }
+        
+        logger.info(f"✓ Generated {periods}-day forecast: {avg_rides_per_day:.1f} rides/day avg")
+        
+        return {
+            "success": True,
+            "horizon": horizon,
+            "daily_forecasts": daily_forecasts,
+            "summary": summary,
+            "method": "Prophet ML"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating forecast: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating forecast: {str(e)}"
+        )

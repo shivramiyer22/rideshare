@@ -222,3 +222,4 @@ python3 -m pytest tests/test_segment_dynamic_pricing_report.py::test_api_segment
 ```bash
 python3 -m pytest tests/test_segment_dynamic_pricing_report.py --cov=app.utils.report_generator --cov=app.routers.reports -v
 ```
+

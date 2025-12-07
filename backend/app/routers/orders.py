@@ -242,12 +242,12 @@ async def create_order(order: OrderCreate):
     Enhanced to include:
     1. Segment analysis (avg price, distance from historical data)
     2. Price estimation (PricingEngine calculation if distance/duration provided)
-    3. All computed fields stored in MongoDB for analytics
+    3. All computed fields stored in MongoDB for analytics (or in-memory if MongoDB unavailable)
     
     Steps:
     1. Calculate segment estimates using segment_analysis helper
     2. Create order with computed pricing fields
-    3. Save to MongoDB (ride_orders collection)
+    3. Save to MongoDB (ride_orders collection) or in-memory fallback
     4. Add to priority queue
     5. Return created order
     
@@ -261,8 +261,10 @@ async def create_order(order: OrderCreate):
         from app.agents.segment_analysis import calculate_segment_estimate
         
         database = get_database()
-        if database is None:
-            raise HTTPException(status_code=500, detail="Database connection not available")
+        use_mongodb = database is not None
+        
+        if not use_mongodb:
+            logger.warning("MongoDB not available - order will be stored in-memory only")
         
         logger.info(f"Creating order for user {order.user_id} with segment: {order.location_category}/{order.loyalty_tier}/{order.vehicle_type}/{order.pricing_model}")
         
@@ -336,10 +338,13 @@ async def create_order(order: OrderCreate):
             "updated_at": now
         }
         
-        # Save to MongoDB (orders collection - the actual collection name)
-        collection = database["orders"]
-        await collection.insert_one(order_doc)
-        logger.info(f"Created order {order_id} with estimated price ${estimate['estimated_price']:.2f}")
+        # Save to MongoDB if available (orders collection)
+        if use_mongodb:
+            collection = database["orders"]
+            await collection.insert_one(order_doc)
+            logger.info(f"✅ Created order {order_id} in MongoDB with estimated price ${estimate['estimated_price']:.2f}")
+        else:
+            logger.info(f"⚠️  Created order {order_id} (in-memory only) with estimated price ${estimate['estimated_price']:.2f}")
         
         # Add to priority queue (Redis)
         try:

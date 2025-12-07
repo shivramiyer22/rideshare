@@ -11,6 +11,7 @@ import { SegmentPricingAnalysisTab } from '@/components/tabs/SegmentPricingAnaly
 import { MarketSignalsTab } from '@/components/tabs/MarketSignalsTab';
 import { ElasticityTab } from '@/components/tabs/ElasticityTab';
 import { UploadTab } from '@/components/tabs/UploadTab';
+import { GlobalDataProvider } from '@/contexts/GlobalDataContext';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabType>('overview');
@@ -38,32 +39,34 @@ export default function Home() {
   };
 
   return (
-    <div className="h-screen flex overflow-hidden bg-background">
-      {/* Sidebar */}
-      <Sidebar 
-        activeTab={activeTab} 
-        onTabChange={setActiveTab}
-        isOpen={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
-      />
+    <GlobalDataProvider>
+      <div className="h-screen flex overflow-hidden bg-background">
+        {/* Sidebar */}
+        <Sidebar 
+          activeTab={activeTab} 
+          onTabChange={setActiveTab}
+          isOpen={sidebarOpen}
+          onClose={() => setSidebarOpen(false)}
+        />
 
-      {/* Main Content Area */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Header */}
-        <Header onMenuClick={() => setSidebarOpen(true)} />
+        {/* Main Content Area */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {/* Header */}
+          <Header onMenuClick={() => setSidebarOpen(true)} />
 
-        {/* Content with AI Panel */}
-        <div className="flex-1 flex overflow-hidden gap-px bg-border">
-          {/* Main Content */}
-          <main className="flex-1 overflow-y-auto p-6">
-            {renderTabContent()}
-          </main>
+          {/* Content with AI Panel */}
+          <div className="flex-1 flex overflow-hidden gap-px bg-border">
+            {/* Main Content */}
+            <main className="flex-1 overflow-y-auto p-6">
+              {renderTabContent()}
+            </main>
 
-          {/* AI Assistant Panel */}
-          <AIPanel activeTab={activeTab} />
+            {/* AI Assistant Panel */}
+            <AIPanel activeTab={activeTab} />
+          </div>
         </div>
       </div>
-    </div>
+    </GlobalDataProvider>
   );
 }
 

@@ -245,3 +245,4 @@ const SolutionArchitecture = () => {
 
 export default SolutionArchitecture;
 
+

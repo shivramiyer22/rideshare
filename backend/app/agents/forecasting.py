@@ -805,73 +805,101 @@ def generate_multidimensional_forecast(periods: int = 30) -> str:
 @tool
 def generate_prophet_forecast(pricing_model: str, periods: int) -> Dict[str, Any]:
     """
-    Generate Prophet ML forecast for specified pricing model and period.
+    Generate Prophet ML multi-metric forecast (demand, duration, unit_price).
     
-    This tool uses the trained Prophet ML model to generate demand forecasts.
-    The model predicts future demand based on historical patterns and pricing type.
+    This tool uses 3 trained Prophet ML models (44 regressors each) to generate:
+    - Demand forecast (rides per day)
+    - Duration forecast (average minutes per ride)
+    - Unit Price forecast (average $/minute)
+    - Revenue forecast (calculated from demand × duration × unit_price)
     
     Args:
-        pricing_model: One of "CONTRACTED", "STANDARD", or "CUSTOM"
+        pricing_model: One of "CONTRACTED", "STANDARD", or "CUSTOM" (for backward compatibility, but new model forecasts all segments)
         periods: Number of days to forecast (30, 60, or 90)
     
     Returns:
-        dict: Forecast data with:
-            - forecast: List of forecast points with date, predicted_demand, confidence intervals
-            - model: "prophet_ml"
-            - pricing_model: The pricing model forecasted
+        dict: Multi-metric forecast data with:
+            - forecast: List of forecast points with date, predicted_demand, duration, unit_price, revenue
+            - model: "prophet_ml_multi_metric"
+            - pricing_model: The pricing model requested
             - periods: Number of days forecasted
-            - explanation: Natural language explanation (added by explain_forecast)
-            - context: Events and traffic patterns (added by explain_forecast)
+            - summary: Aggregate statistics
     """
     try:
-        # Generate forecast using Prophet ML model
-        # Run in thread pool to avoid blocking (Prophet is synchronous)
-        loop = asyncio.get_event_loop()
-        forecast_df = loop.run_in_executor(
-            None,
-            forecast_model.forecast,
-            pricing_model,
-            periods
-        )
+        from app.forecasting_ml_multi import MultiMetricForecastModel
+        from app.database import get_database
+        import asyncio
+        import pandas as pd
         
-        # Wait for the result
-        forecast_df = loop.run_until_complete(forecast_df)
+        # Initialize multi-metric model
+        multi_model = MultiMetricForecastModel()
         
-        if forecast_df is None:
+        # Load historical data for regressor calculation
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        database = get_database()
+        historical_df = None
+        
+        if database is not None:
+            try:
+                hwco_collection = database["historical_rides"]
+                hwco_cursor = hwco_collection.find({}).limit(1000)
+                hwco_records = loop.run_until_complete(hwco_cursor.to_list(length=1000))
+                
+                if hwco_records:
+                    for record in hwco_records:
+                        record["Rideshare_Company"] = "HWCO"
+                    historical_df = pd.DataFrame(hwco_records)
+            except Exception as e:
+                logger.warning(f"Could not load historical data: {e}")
+        
+        # Generate forecasts for all 3 metrics
+        forecasts = multi_model.forecast_all(periods=periods, historical_data=historical_df)
+        
+        if forecasts is None:
             return {
-                "error": "Forecast generation failed. Ensure model is trained first.",
+                "error": "Forecast generation failed. Ensure models are trained first.",
                 "forecast": []
             }
         
-        # Convert DataFrame to list of dictionaries
-        forecast_list = forecast_df.to_dict("records")
-        
-        # Format dates as ISO strings and ensure proper field names
+        # Combine forecasts into daily records
         formatted_forecast = []
-        for item in forecast_list:
-            formatted_item = {}
-            # Map Prophet output fields to expected format
-            if "ds" in item:
-                date_val = item["ds"]
-                formatted_item["date"] = date_val.isoformat() if hasattr(date_val, "isoformat") else str(date_val)
-            if "yhat" in item:
-                formatted_item["predicted_demand"] = item["yhat"]
-            if "yhat_lower" in item:
-                formatted_item["confidence_lower"] = item["yhat_lower"]
-            if "yhat_upper" in item:
-                formatted_item["confidence_upper"] = item["yhat_upper"]
-            if "trend" in item:
-                formatted_item["trend"] = item["trend"]
-            formatted_forecast.append(formatted_item)
+        for day in range(periods):
+            demand_val = forecasts['demand'].iloc[day]['yhat']
+            duration_val = forecasts['duration'].iloc[day]['yhat']
+            unit_price_val = forecasts['unit_price'].iloc[day]['yhat']
+            revenue_val = demand_val * duration_val * unit_price_val
+            
+            formatted_forecast.append({
+                "date": forecasts['demand'].iloc[day]['ds'].isoformat(),
+                "predicted_demand": float(max(0, demand_val)),
+                "predicted_duration": float(max(0, duration_val)),
+                "predicted_unit_price": float(max(0, unit_price_val)),
+                "predicted_revenue": float(max(0, revenue_val)),
+                "confidence_lower": float(max(0, forecasts['demand'].iloc[day]['yhat_lower'])),
+                "confidence_upper": float(forecasts['demand'].iloc[day]['yhat_upper'])
+            })
+        
+        # Calculate summary statistics
+        total_rides = sum(d['predicted_demand'] for d in formatted_forecast)
+        avg_rides_per_day = total_rides / periods
+        total_revenue = sum(d['predicted_revenue'] for d in formatted_forecast)
         
         return {
             "forecast": formatted_forecast,
-            "model": "prophet_ml",
+            "model": "prophet_ml_multi_metric",
             "pricing_model": pricing_model,
             "periods": periods,
-            "confidence": 0.80
+            "confidence": 0.80,
+            "summary": {
+                "avg_rides_per_day": round(avg_rides_per_day, 2),
+                "total_predicted_revenue": round(total_revenue, 2),
+                "forecast_period_days": periods
+            }
         }
     except Exception as e:
+        logger.error(f"Error generating multi-metric forecast: {e}")
         return {
             "error": f"Error generating forecast: {str(e)}",
             "forecast": []

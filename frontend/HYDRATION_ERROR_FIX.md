@@ -121,3 +121,4 @@ December 5, 2025
 ## Summary
 The hydration errors are now **completely resolved**. The recharts components render only on the client side, eliminating any server/client mismatch and providing a clean, error-free console.
 
+

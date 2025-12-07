@@ -212,3 +212,4 @@ The `/pipeline/history` endpoint may timeout due to large response payloads (162
 
 The pipeline was triggered successfully (Run ID: `PIPE-20251205-111621-33d67d`) and completed. The data should be in MongoDB ready for validation.
 
+
